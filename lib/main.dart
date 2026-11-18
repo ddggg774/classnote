@@ -1,6 +1,6 @@
 // lib/main.dart
 // App 入口：初始化 Flutter、锁定竖屏、加载首页。
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 import 'pages/home_page.dart';

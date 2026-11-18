@@ -4,7 +4,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -33,6 +33,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   MindMapData? _mindMap;
   bool _summarizing = false;
   bool _exporting = false;
+  bool _notFound = false;
   int _tabIndex = 0;
 
   @override
@@ -47,69 +48,83 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     _load();
   }
 
-  /// 读取笔记，并尝试解析已有的总结
+  /// 读取笔记，并尝试解析已有的总结。
+  /// 找不到时明确置 _notFound，避免旧版那样永远转圈。
   Future<void> _load() async {
     final note = await _db.queryById(widget.noteId);
-    if (note == null) return;
+    if (!mounted) return;
+    if (note == null) {
+      setState(() => _notFound = true);
+      return;
+    }
     _transcriptController.text = note.transcript;
     MindMapData? parsed;
     if (note.hasSummary) {
       try {
         parsed = MindMapData.fromJson(jsonDecode(note.summaryJson!));
-      } catch (_) {}
+      } catch (_) {
+        // 总结 JSON 损坏（版本升级/写入中断）时降级为「无总结」，不影响看原文
+        parsed = null;
+      }
     }
-    if (mounted) {
-      setState(() {
-        _note = note;
-        _mindMap = parsed;
-      });
-    }
+    setState(() {
+      _note = note;
+      _mindMap = parsed;
+    });
   }
 
-  /// 调用 AI 生成总结（同时生成思维导图），结果写回数据库
+  /// 调用 AI 生成总结（同时生成思维导图），结果写回数据库。
+  /// 注意：总结用的是编辑框里的当前文本，所以必须把 transcript 一起存回去，
+  /// 否则库里会出现「旧原文 + 基于新原文的总结」这种对不上的数据。
   Future<void> _generateSummary() async {
-    if (_note == null) return;
+    if (_note == null || _summarizing) return;
+    final currentTranscript = _transcriptController.text;
     setState(() => _summarizing = true);
     try {
-      // 用当前编辑框里的原文去总结（用户可能改过）
-      final data = await _ai.summarize(_transcriptController.text);
+      final data = await _ai.summarize(currentTranscript);
       final summaryJson = jsonEncode(data.toJson());
-      final updated = _note!.copyWith(summaryJson: summaryJson);
+      final updated = _note!.copyWith(
+        summaryJson: summaryJson,
+        transcript: currentTranscript,
+      );
       await _db.update(updated);
 
-      if (mounted) {
-        setState(() {
-          _note = updated;
-          _mindMap = data;
-          _tabIndex = 2; // 跳到思维导图 Tab
-          _tabController.animateTo(2);
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _note = updated;
+        _mindMap = data;
+        _tabIndex = 2; // 跳到思维导图 Tab
+      });
+      _tabController.animateTo(2);
     } catch (e) {
       _showSnack(e.toString().replaceFirst('Exception: ', ''));
     } finally {
-      if (mounted) {
-        setState(() => _summarizing = false);
-      }
+      if (mounted) setState(() => _summarizing = false);
     }
   }
 
   /// 导出思维导图为 PNG 图片，并通过系统分享面板保存/发送
   Future<void> _exportMindMap() async {
-    if (_mindMap == null) return;
+    if (_mindMap == null || _exporting) return;
+    // 提前取好分享面板的弹出位置：后面有 await，之后再读 context 会踩
+    // use_build_context_synchronously，而且在页面已销毁时会拿到无效对象。
+    final box = context.findRenderObject() as RenderBox?;
+    final origin =
+        box == null ? null : box.localToGlobal(Offset.zero) & box.size;
     setState(() => _exporting = true);
     try {
       final bytes = await MindMapWidget.exportPng(_captureKey);
-      // 写临时文件，文件名带课程名和日期
       final dir = await getTemporaryDirectory();
       final safeTitle = _note!.title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
       final file = File('${dir.path}/导图_$safeTitle.png');
       await file.writeAsBytes(bytes);
 
+      // iPad 上分享面板必须给出弹出位置，否则 share_plus 会抛异常
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path)],
           text: '「${_note!.title}」思维导图',
+          sharePositionOrigin: origin,
         ),
       );
     } catch (e) {
@@ -143,6 +158,34 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   @override
   Widget build(BuildContext context) {
     final note = _note;
+    if (_notFound) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('笔记详情')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.delete_sweep_outlined,
+                    size: 64, color: Colors.grey.shade400),
+                const SizedBox(height: 16),
+                const Text('这条笔记已经不在了'),
+                const SizedBox(height: 8),
+                Text('可能已在首页被删除',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                const SizedBox(height: 20),
+                OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('返回列表'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text(note?.title ?? '笔记详情'),
@@ -162,27 +205,39 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               icon: const Icon(Icons.auto_awesome),
               label: Text(_mindMap == null ? '一键总结' : '重新总结'),
             ),
+      // 关键：总结期间不再把整个 IndexedStack 换成 spinner。
+      // 那样会清掉 Tab1 的编辑内容、Tab2/3 的滚动位置，用户每次总结都丢一次上下文。
+      // 改成「保留页面 + 顶部线性进度 + 只读锁定」。
       body: note == null
           ? const Center(child: CircularProgressIndicator())
-          : _summarizing
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+          : Column(
+              children: [
+                if (_summarizing)
+                  const LinearProgressIndicator(minHeight: 3),
+                if (_summarizing)
+                  Container(
+                    width: double.infinity,
+                    color: Colors.indigo.shade50,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Text(
+                      'AI 正在总结要点（约 10–30 秒，可用下方文字照常滚动查看）…',
+                      style:
+                          TextStyle(color: Colors.indigo.shade900, fontSize: 12),
+                    ),
+                  ),
+                Expanded(
+                  child: IndexedStack(
+                    index: _tabIndex,
                     children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 16),
-                      Text('AI 正在总结要点…'),
+                      _buildTranscriptTab(),
+                      _buildSummaryTab(),
+                      _buildMindMapTab(),
                     ],
                   ),
-                )
-              : IndexedStack(
-                  index: _tabIndex,
-                  children: [
-                    _buildTranscriptTab(),
-                    _buildSummaryTab(),
-                    _buildMindMapTab(),
-                  ],
                 ),
+              ],
+            ),
     );
   }
 
@@ -198,6 +253,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               maxLines: null,
               expands: true,
               textAlignVertical: TextAlignVertical.top,
+              // 总结期间锁住编辑：避免「总结的是改到一半的文本」这种歧义
+              readOnly: _summarizing,
               decoration: InputDecoration(
                 hintText: '课堂原文，可直接修改',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),

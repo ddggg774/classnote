@@ -1,6 +1,11 @@
 // lib/services/db_service.dart
 // 本地数据库服务：用 sqflite 把笔记存到手机本地。
 // 这是"存储层"，页面不直接操作数据库，统一走这里。
+//
+// 【版本迁移约定 · 加字段前必读】
+// 数据库 version 与迁移必须成对维护：改 version 就必须在同一次提交里补 onUpgrade 分支，
+// 否则已装机用户升级后打开 App 会直接抛 "no such column" 白屏，数据还在但打不开。
+// 每个迁移必须可重复执行（IF NOT EXISTS 或先查 PRAGMA table_info），失败要能回滚到旧版本。
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -13,6 +18,9 @@ class DbService {
   static final DbService _instance = DbService._internal();
   factory DbService() => _instance;
 
+  /// 当前 schema 版本。v1 = 初始；v2 = 增加 status（草稿/已完成）。
+  static const int dbVersion = 2;
+
   Database? _db;
 
   /// 打开（或创建）数据库
@@ -22,7 +30,7 @@ class DbService {
     final path = join(dbPath, AppConfig.dbName);
     _db = await openDatabase(
       path,
-      version: 1,
+      version: dbVersion,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE notes (
@@ -31,24 +39,64 @@ class DbService {
             transcript TEXT NOT NULL,
             summary_json TEXT,
             created_at INTEGER NOT NULL,
-            duration INTEGER NOT NULL DEFAULT 0
+            duration INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'done'
           )
         ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // 逐版本迁移，每个分支独立、可重入
+        if (oldVersion < 2) {
+          await _addColumnIfMissing(
+            db,
+            'notes',
+            'status',
+            "TEXT NOT NULL DEFAULT 'done'",
+          );
+        }
       },
     );
     return _db!;
   }
 
+  /// 加列前先查 PRAGMA table_info，保证迁移可重复执行（避免重复 ALTER 抛错）
+  Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column,
+    String definition,
+  ) async {
+    final info = await db.rawQuery('PRAGMA table_info($table)');
+    final exists = info.any((row) => row['name'] == column);
+    if (exists) return;
+    await db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
+  }
+
   /// 新增一条笔记
   Future<void> insert(Note note) async {
     final db = await database;
-    await db.insert('notes', note.toMap());
+    // uuid 理论上不会撞；万一重复（例如草稿转正时重复插入），用 replace 覆盖而不是抛错
+    await db.insert('notes', note.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  /// 查询全部笔记，按创建时间倒序（最新的在前）
+  /// 查询全部笔记，按创建时间倒序（最新的在前）。
+  /// 注意：这里仍然取全字段，首页只展示摘要；正文按需 queryById 取。
   Future<List<Note>> queryAll() async {
     final db = await database;
     final maps = await db.query('notes', orderBy: 'created_at DESC');
+    return maps.map((m) => Note.fromMap(m)).toList();
+  }
+
+  /// 只看草稿（未完成的录音），用于首页「继续记录」入口
+  Future<List<Note>> queryDrafts() async {
+    final db = await database;
+    final maps = await db.query(
+      'notes',
+      where: 'status = ?',
+      whereArgs: [Note.statusDraft],
+      orderBy: 'created_at DESC',
+    );
     return maps.map((m) => Note.fromMap(m)).toList();
   }
 
@@ -60,7 +108,7 @@ class DbService {
     return Note.fromMap(maps.first);
   }
 
-  /// 更新一条笔记（用于写入 AI 总结）
+  /// 更新一条笔记（用于写入 AI 总结、草稿增量保存等）
   Future<void> update(Note note) async {
     final db = await database;
     await db.update('notes', note.toMap(), where: 'id = ?', whereArgs: [note.id]);
@@ -70,5 +118,19 @@ class DbService {
   Future<void> delete(String id) async {
     final db = await database;
     await db.delete('notes', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// 清掉一天前创建、既没有标题也没有正文的空白草稿
+  /// （用户点进录音页又立刻退出会产生）。限定 24 小时以上，避免误删正在用的草稿。
+  Future<int> purgeEmptyDrafts() async {
+    final db = await database;
+    final cutoff = DateTime.now()
+        .subtract(const Duration(hours: 24))
+        .millisecondsSinceEpoch;
+    return db.delete(
+      'notes',
+      where: "status = ? AND transcript = '' AND title = '未命名课堂' AND created_at < ?",
+      whereArgs: [Note.statusDraft, cutoff],
+    );
   }
 }

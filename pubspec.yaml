@@ -10,8 +10,6 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.6
-  # 实时语音转文字（Android / iOS 双端）
-  speech_to_text: ^7.5.0
   # 调用 DeepSeek 大模型 API 做总结
   http: ^1.2.0
   # 本地笔记数据库
@@ -27,6 +25,9 @@ dependencies:
   path_provider: ^2.1.6
   # 录音：录一段音频后上传云端识别（不依赖系统语音引擎）
   record: ^7.2.0
+  # 录音期间保持屏幕/CPU 唤醒，避免锁屏后麦克风采集被系统掐断
+  wakelock_plus: ^1.2.10
+  material_ui: ^1.11.1
 
 dev_dependencies:
   flutter_test:

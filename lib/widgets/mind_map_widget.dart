@@ -5,7 +5,7 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 
 import '../models/note.dart';
@@ -21,19 +21,36 @@ class MindMapWidget extends StatelessWidget {
 
   /// 把当前思维导图渲染成 PNG 字节（背景为白色，适配分享/保存）。
   /// 需先传入 [captureKey]；失败时抛异常。
+  ///
+  /// [pixelRatio] 会按内容尺寸自动下调：导图高 2000–4000 逻辑像素时，
+  /// 固定 3 倍会请求 6000–12000 物理像素宽的位图（数百 MB），中低端机直接 OOM。
+  /// 这里把「物理像素上限」钉在 [maxPixels] 内，长图自动降到 2 倍甚至更低。
+  /// [ui.Image] 必须 dispose，否则每次导出都会泄漏一块原生内存。
   static Future<Uint8List> exportPng(GlobalKey captureKey,
-      {double pixelRatio = 3.0}) async {
+      {double pixelRatio = 3.0, double maxPixels = 4000}) async {
     final boundary =
         captureKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
     if (boundary == null) {
       throw Exception('导图尚未渲染完成，请稍后重试');
     }
-    final image = await boundary.toImage(pixelRatio: pixelRatio);
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    if (byteData == null) {
-      throw Exception('导出图片失败');
+    final size = boundary.size;
+    var ratio = pixelRatio;
+    final longest = size.width > size.height ? size.width : size.height;
+    if (longest > 0) {
+      // 保证最长边不超过 maxPixels 物理像素，同时最低不低于 1.0（否则文字发虚）
+      final allowed = maxPixels / longest;
+      if (allowed < ratio) ratio = allowed.clamp(1.0, pixelRatio);
     }
-    return byteData.buffer.asUint8List();
+    final image = await boundary.toImage(pixelRatio: ratio);
+    try {
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) {
+        throw Exception('导出图片失败');
+      }
+      return byteData.buffer.asUint8List();
+    } finally {
+      image.dispose();
+    }
   }
 
   @override

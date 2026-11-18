@@ -1,57 +1,257 @@
 // lib/services/cloud_asr_service.dart
 // 云端语音识别服务（自动分段版）：
-// 录音 → 每隔约 5 分钟自动切一段 → 上传硅基流动 SenseVoiceSmall → 文字按序追加。
+// 录音 → 按固定时长自动切段 → 上传硅基流动 SenseVoiceSmall → 文字按录制顺序回调。
 // 用户只需「开始」一次、录到结束点「停止」，中间不用管，无总时长限制。
 // 不依赖手机系统语音引擎，任何手机（含无 Google 服务的国产机）都能用。
+//
+// 【状态机说明 · 改这个文件前务必读完】
+//   _recording   正在录音。只有 _startNewChunk() 成功后才置 true，失败必须回滚为 false。
+//   _chunkIndex  正在录的这一段的段号（从 0 开始）。
+//   _queued      已经入过队的段号集合，用来保证「同一段只会上传一次」。
+//                _rotateChunk 与 stopRecording 存在时间窗口，没有它会把同一段传两遍。
+//   _queue       待识别的段号（FIFO）。
+//   _results     已完成段的文字，按段号暂存，直到前面的段也完成才按序吐给页面。
+//   _nextToAppend 下一个该吐给页面的段号。任何一段永久失败都会在此留下占位文字并前进，
+//                否则一段卡住会让后面所有文字永远出不来。
+//   _failed      永久失败但仍保留音频文件的段（idx → path），供用户手动补传。
+//   _idleCompleter 队列清空时 complete，替代原来的 200ms 忙轮询。
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../config.dart';
 import 'settings_service.dart';
+
+/// 识别异常：区分「重试有用」和「重试没用」。
+/// 401/403（Key 错）、4xx（参数错）重试没有意义；网络/超时/5xx/429 值得退避重试。
+class AsrException implements Exception {
+  final String message;
+  final bool retryable;
+  final int? statusCode;
+
+  AsrException(this.message, {this.retryable = true, this.statusCode});
+
+  @override
+  String toString() => message;
+}
+
+/// 单个分段的处理状态，供 UI 画小圆点
+enum SegmentState { queued, uploading, done, failed }
+
+/// 录音与识别的实时进度快照（不可变），页面订阅它来刷新 UI。
+@immutable
+class AsrProgress {
+  final int recordedSeconds; // 已录总时长（秒）
+  final int segmentNo; // 当前第几段（1 起）
+  final int segmentElapsed; // 当前段已录秒数
+  final int doneSegments; // 已成功识别段数
+  final int pendingSegments; // 排队 + 上传中段数
+  final int failedSegments; // 永久失败段数
+  final String? notice; // 「第 2 段重试中 (1/3)」这类临时提示
+
+  const AsrProgress({
+    this.recordedSeconds = 0,
+    this.segmentNo = 1,
+    this.segmentElapsed = 0,
+    this.doneSegments = 0,
+    this.pendingSegments = 0,
+    this.failedSegments = 0,
+    this.notice,
+  });
+
+  bool get busy => pendingSegments > 0;
+
+  AsrProgress copyWith({
+    int? recordedSeconds,
+    int? segmentNo,
+    int? segmentElapsed,
+    int? doneSegments,
+    int? pendingSegments,
+    int? failedSegments,
+    String? notice,
+    bool clearNotice = false,
+  }) {
+    return AsrProgress(
+      recordedSeconds: recordedSeconds ?? this.recordedSeconds,
+      segmentNo: segmentNo ?? this.segmentNo,
+      segmentElapsed: segmentElapsed ?? this.segmentElapsed,
+      doneSegments: doneSegments ?? this.doneSegments,
+      pendingSegments: pendingSegments ?? this.pendingSegments,
+      failedSegments: failedSegments ?? this.failedSegments,
+      notice: clearNotice ? null : (notice ?? this.notice),
+    );
+  }
+
+  /// 格式化成 12:34
+  static String formatSeconds(int s) {
+    final m = s ~/ 60;
+    final sec = s % 60;
+    return '$m:${sec.toString().padLeft(2, '0')}';
+  }
+}
 
 class CloudAsrService {
   final AudioRecorder _recorder = AudioRecorder();
   final SettingsService _settings = SettingsService();
 
+  /// 每段时长（秒）。60 秒而不是 300 秒，原因有三：
+  /// ① 首段出字从 5 分钟缩短到 1 分钟，用户不会以为 App 卡死；
+  /// ② 单段失败的最大损失从 5 分钟降到 1 分钟；
+  /// ③ 单段 wav 从约 9.6MB 降到约 1.9MB，弱网下不至于频繁超时。
+  /// 代价是每小时请求数从 12 次升到 60 次（识别按模型免费额度计，需真机确认未触发频控）。
+  static const int chunkSeconds = 60;
+
+  /// 可重试的退避间隔
+  static const List<Duration> _retryDelays = [
+    Duration(milliseconds: 500),
+    Duration(milliseconds: 1500),
+    Duration(milliseconds: 4000),
+  ];
+
   Timer? _chunkTimer;
   String? _currentPath;
-  int _chunkIndex = 0;          // 当前正在录的段号
-  int _nextToAppend = 0;        // 下一个该回调给页面的段号（保证顺序）
+  int _chunkIndex = 0;
+  int _nextToAppend = 0;
   bool _recording = false;
   bool _processing = false;
+  bool _retrying = false;
+  bool _disposed = false;
 
-  final Map<int, String> _pendingPaths = {}; // 待识别段的 段号→文件路径
-  final List<int> _queue = [];               // 待识别段号队列
-  final Map<int, String> _results = {};      // 已完成识别结果
+  int _recordedSeconds = 0; // 累计录音秒数（不含等待转写时间，用于修正时长统计）
+  int _segmentElapsed = 0; // 当前段已录秒数
 
-  Function(String text)? _onText;            // 每完成一段，回调该段文字
+  final Map<int, String> _paths = {}; // 段号 → 音频文件路径
+  final Set<int> _queued = {}; // 已入队段号（幂等）
+  final List<int> _queue = []; // 待识别队列
+  final Map<int, String> _results = {}; // 已完成待按序吐出的文字
+  final Map<int, String> _failed = {}; // 永久失败但仍可补传的段
+
+  Completer<void>? _idleCompleter;
+
+  /// 串行化切段/停止，避免「切段途中点停止」把同一段入队两次
+  Future<void> _chain = Future<void>.value();
+
+  Function(String text)? _onText;
   Function(String msg)? _onError;
 
-  // 每段时长：5 分钟。16kHz 单声道 wav 约 9MB，远低于硅基流动 50MB 上限。
-  // 分段大一些可减少请求次数、更省时间；识别失败时损失也仅一段。
-  static const int chunkSeconds = 300;
+  final ValueNotifier<AsrProgress> progress =
+      ValueNotifier<AsrProgress>(const AsrProgress());
 
   bool get isRecording => _recording;
+  bool get hasFailedSegments => _failed.isNotEmpty;
+  int get recordedSeconds => _recordedSeconds;
 
   Future<bool> hasPermission() => _recorder.hasPermission();
 
+  /// 回到前台时核对「服务以为在录」与「录音器真的在录」是否一致。
+  ///
+  /// 这是锁屏/切后台/来电之后最容易被忽略的一步：系统掐掉麦克风时
+  /// 不会抛异常、不会回调，Dart 侧 `_recording` 仍然是 true、Timer 也停着，
+  /// 界面会一直显示「停止录音」，用户完全不知道已经录不进去了。
+  /// 返回 true 表示「刚刚发现录音已经死了，且已收尾为可保存状态」。
+  Future<bool> syncRecorderState() async {
+    if (_disposed || !_recording) return false;
+    bool actuallyRecording;
+    try {
+      actuallyRecording = await _recorder.isRecording();
+    } catch (_) {
+      actuallyRecording = false;
+    }
+    if (actuallyRecording) return false;
+
+    // 录音器已经停了：按「用户点停止」同样的路径收尾，把已有音频送去识别，
+    // 这样中断之前录到的内容不会丢。
+    debugPrint('[asr] 检测到录音器已被系统中断，自动收尾');
+    _recording = false;
+    _chunkTimer?.cancel();
+    _chunkTimer = null;
+    try {
+      await WakelockPlus.disable();
+    } catch (_) {}
+    final path = _currentPath;
+    final idx = _chunkIndex;
+    _currentPath = null;
+    if (path != null && await File(path).exists()) {
+      _enqueue(idx, path);
+    }
+    _emit();
+    _onError?.call('录音已被系统中断（锁屏/来电/后台限制），已录部分已自动送去识别');
+    return true;
+  }
+
+  /// 把任务串到互斥链上执行，保证切段与停止不会交错
+  Future<T> _exclusive<T>(Future<T> Function() task) {
+    final result = _chain.then((_) => task());
+    _chain = result.then((_) {}, onError: (_) {});
+    return result;
+  }
+
+  void _emit() {
+    if (_disposed) return;
+    var done = 0, pending = 0;
+    for (final idx in _queued) {
+      final st = _stateOf(idx);
+      if (st == SegmentState.done) {
+        done++;
+      } else if (st != SegmentState.failed) {
+        pending++;
+      }
+    }
+    progress.value = AsrProgress(
+      recordedSeconds: _recordedSeconds,
+      segmentNo: _chunkIndex + 1,
+      segmentElapsed: _segmentElapsed,
+      doneSegments: done,
+      pendingSegments: pending,
+      failedSegments: _failed.length,
+      notice: progress.value.notice,
+    );
+  }
+
+  SegmentState _stateOf(int idx) {
+    if (_failed.containsKey(idx)) return SegmentState.failed;
+    if (_results.containsKey(idx)) return SegmentState.done;
+    if (_queue.contains(idx)) return SegmentState.uploading;
+    return SegmentState.queued;
+  }
+
+  void _setNotice(String? n) {
+    if (_disposed) return;
+    progress.value = progress.value.copyWith(
+      notice: n,
+      clearNotice: n == null,
+    );
+  }
+
+  // ───────────────────────── 录音 ─────────────────────────
+
   /// 开始录音。onText 每识别完一段就回调该段文字（按录制顺序）；onError 报告错误。
+  /// Key 未配置时通过 onError 提示并直接返回（不抛异常，页面无需 try/catch 区分）。
+  /// 麦克风启动失败时会回滚状态并抛出，调用方据此提示用户。
   Future<void> startRecording({
     required Function(String text) onText,
     required Function(String msg) onError,
   }) async {
+    if (_recording || _disposed) return;
+
     _onText = onText;
     _onError = onError;
     _chunkIndex = 0;
     _nextToAppend = 0;
+    _recordedSeconds = 0;
+    _segmentElapsed = 0;
     _results.clear();
     _queue.clear();
-    _pendingPaths.clear();
+    _queued.clear();
+    _paths.clear();
+    _failed.clear();
+    _setNotice(null);
 
     final key = await _settings.getAsrKey();
     if (key.isEmpty) {
@@ -59,16 +259,52 @@ class CloudAsrService {
       return;
     }
 
+    await _sweepStaleFiles();
+
+    // 先启动录音，成功了才把 _recording 置 true —— 顺序颠倒会造成
+    // 「界面显示正在录音、实际什么都没录」的假状态。
+    try {
+      await _startNewChunk();
+    } catch (e) {
+      _recording = false;
+      try {
+        await _recorder.stop();
+      } catch (_) {}
+      rethrow;
+    }
+
     _recording = true;
-    await _startNewChunk();
-    _chunkTimer = Timer.periodic(const Duration(seconds: chunkSeconds), (_) {
-      _rotateChunk();
-    });
+    _emit();
+    // 录音期间保持唤醒：课堂场景用户经常锁屏把手机放桌上，
+    // 不加这个，Android 会在锁屏后限制麦克风采集、并让 Timer 随进程休眠停掉，
+    // 结果是「界面还在显示录音，实际早就没在录」。
+    // 注意：wakelock 只能保 CPU/屏幕，真正抗后台回收仍需前台服务（见 README 说明）。
+    try {
+      await WakelockPlus.enable();
+    } catch (e) {
+      debugPrint('[asr] 开启唤醒锁失败: $e');
+    }
+    _chunkTimer = Timer.periodic(const Duration(seconds: 1), _tick);
+  }
+
+  void _tick(Timer _) {
+    if (!_recording || _disposed) return;
+    _recordedSeconds++;
+    _segmentElapsed++;
+    _emit();
+    if (_segmentElapsed >= chunkSeconds) {
+      _segmentElapsed = 0;
+      // 切段放到互斥链上，与停止操作串行
+      unawaited(_exclusive(() async {
+        await _rotateChunk();
+      }));
+    }
   }
 
   Future<void> _startNewChunk() async {
     final dir = await getTemporaryDirectory();
-    _currentPath = '${dir.path}/classnote_${DateTime.now().microsecondsSinceEpoch}_$_chunkIndex.wav';
+    _currentPath =
+        '${dir.path}/classnote_${DateTime.now().microsecondsSinceEpoch}_$_chunkIndex.wav';
     const config = RecordConfig(
       encoder: AudioEncoder.wav,
       sampleRate: 16000,
@@ -77,123 +313,334 @@ class CloudAsrService {
     await _recorder.start(config, path: _currentPath!);
   }
 
-  /// 切段：停止当前段 → 排进识别队列 → 立刻开始下一段（录音不中断流程）
+  /// 切段：停当前段 → 入队 → 立刻开始下一段（录音不中断）
   Future<void> _rotateChunk() async {
-    if (!_recording) return;
+    if (!_recording || _disposed) return;
     final path = _currentPath;
     final idx = _chunkIndex;
+    _currentPath = null; // 先摘掉，避免停止流程重复处理同一段
+
     try {
       await _recorder.stop();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[asr] 切段停止录音失败: $e');
+    }
+
     _chunkIndex++;
-    if (path != null) {
-      _pendingPaths[idx] = path;
-      _queue.add(idx);
-      _processQueue(); // 后台识别，不阻塞录音
-    }
-    if (_recording) await _startNewChunk();
-  }
+    if (path != null) _enqueue(idx, path);
 
-  /// 顺序处理识别队列：保证文字按录制顺序回调
-  Future<void> _processQueue() async {
-    if (_processing) return;
-    _processing = true;
-    while (_queue.isNotEmpty) {
-      final idx = _queue.removeAt(0);
-      final path = _pendingPaths[idx];
-      if (path == null) continue;
-      String text = '';
+    if (_recording && !_disposed) {
       try {
-        text = await recognize(path);
+        await _startNewChunk();
       } catch (e) {
-        _onError?.call(e.toString().replaceFirst('Exception: ', ''));
-      }
-      _results[idx] = text;
-      // 按序把连续完成的段回调出去
-      while (_results.containsKey(_nextToAppend)) {
-        final t = _results.remove(_nextToAppend)!;
-        if (t.isNotEmpty) _onText?.call(t);
-        _nextToAppend++;
+        // 下一段起不来：录音实际上已经断了，必须让界面知道，而不是继续假装在录
+        _recording = false;
+        _chunkTimer?.cancel();
+        _chunkTimer = null;
+        _onError?.call('录音被中断（可能是被其他应用占用麦克风），请重新开始');
       }
     }
-    _processing = false;
   }
 
-  /// 停止录音：停掉计时器和当前段，等所有段识别完再返回
-  Future<void> stopRecording() async {
+  /// 入队（幂等）：同一段号只会入队一次
+  void _enqueue(int idx, String path) {
+    if (!_queued.add(idx)) return;
+    _paths[idx] = path;
+    _queue.add(idx);
+    _emit();
+    unawaited(_processQueue());
+  }
+
+  /// 停止录音：停掉计时器和当前段，等所有段识别完（或超时）再返回
+  Future<void> stopRecording({Duration timeout = const Duration(seconds: 120)}) {
+    return _exclusive(() => _stopInner(timeout: timeout));
+  }
+
+  Future<void> _stopInner({required Duration timeout}) async {
     _chunkTimer?.cancel();
     _chunkTimer = null;
     if (!_recording) return;
     _recording = false;
+    try {
+      await WakelockPlus.disable();
+    } catch (e) {
+      debugPrint('[asr] 关闭唤醒锁失败: $e');
+    }
 
     final path = _currentPath;
     final idx = _chunkIndex;
+    _currentPath = null;
     if (path != null) {
       try {
         await _recorder.stop();
-        _pendingPaths[idx] = path;
-        _queue.add(idx);
-        _processQueue();
-      } catch (_) {}
+        _enqueue(idx, path);
+      } catch (e) {
+        debugPrint('[asr] 停止录音失败: $e');
+        _onError?.call('最后一段音频保存失败：$e');
+      }
     }
-    // 等待队列识别完毕
-    while (_processing || _queue.isNotEmpty) {
-      await Future.delayed(const Duration(milliseconds: 200));
+    _emit();
+
+    // 等队列排空。用 Completer 而不是 200ms 忙轮询，并加总超时兜底，
+    // 避免任何未预料的异常让界面永久卡在「正在转写」。
+    if (_queue.isEmpty && !_processing) return;
+    _idleCompleter ??= Completer<void>();
+    try {
+      await _idleCompleter!.future.timeout(timeout);
+    } on TimeoutException {
+      _onError?.call('部分分段转写超时，已完成的文字已保留，剩余可在下方补传');
+    } finally {
+      _idleCompleter = null;
     }
   }
 
-  /// 把一段音频转成文字（供队列调用）
+  // ─────────────────────── 识别队列 ───────────────────────
+
+  /// 顺序处理识别队列：保证文字按录制顺序回调。
+  /// 注意 finally：_processing 必须复位，否则一次异常就让停止流程永久卡住。
+  Future<void> _processQueue() async {
+    if (_processing || _disposed) return;
+    _processing = true;
+    try {
+      while (_queue.isNotEmpty) {
+        if (_disposed) break;
+        final idx = _queue.removeAt(0);
+        final path = _paths[idx];
+        if (path == null) {
+          _queued.remove(idx);
+          continue;
+        }
+
+        _emit();
+        String? text;
+        String? error;
+        var fatal = false;
+
+        for (var attempt = 0; attempt <= _retryDelays.length; attempt++) {
+          try {
+            text = await recognize(path);
+            break;
+          } on AsrException catch (e) {
+            error = e.message;
+            fatal = !e.retryable;
+            if (fatal || attempt == _retryDelays.length) break;
+            _setNotice(
+                '第 ${idx + 1} 段识别失败，正在重试 ${attempt + 1}/${_retryDelays.length}');
+            await Future<void>.delayed(_retryDelays[attempt]);
+            if (_disposed) break;
+          } catch (e) {
+            // 非预期异常：不重试，但必须留下痕迹而不是静默吞掉
+            error = e.toString().replaceFirst('Exception: ', '');
+            fatal = true;
+            break;
+          }
+        }
+        _setNotice(null);
+        if (_disposed) break;
+
+        if (text != null && text.isNotEmpty) {
+          _results[idx] = text;
+          _failed.remove(idx);
+          await _deleteQuietly(path);
+          _paths.remove(idx);
+        } else {
+          // 永久失败：保留文件以便补传，同时在正文里留下可见占位，
+          // 让用户知道「这里缺了一段」，而不是静默少 60 秒内容。
+          _results[idx] = '〔第 ${idx + 1} 段语音识别失败'
+              '${fatal ? '' : '（多次重试未成功）'}：${error ?? '未知原因'}〕';
+          _failed[idx] = path;
+          _onError?.call('第 ${idx + 1} 段识别失败：${error ?? '未知原因'}');
+        }
+
+        // 按序吐出所有已就绪的段
+        while (_results.containsKey(_nextToAppend)) {
+          final t = _results.remove(_nextToAppend)!;
+          if (t.isNotEmpty) _onText?.call(t);
+          _nextToAppend++;
+        }
+        _emit();
+      }
+    } finally {
+      _processing = false;
+      _emit();
+      if (_queue.isEmpty) {
+        final c = _idleCompleter;
+        _idleCompleter = null;
+        if (c != null && !c.isCompleted) c.complete();
+      }
+    }
+  }
+
+  /// 补传所有此前失败的段（用户点「重试失败段」）
+  Future<void> retryFailedSegments() async {
+    if (_failed.isEmpty || _disposed || _retrying) return;
+    final items = Map<int, String>.from(_failed);
+    _failed.clear();
+    _retrying = true;
+    _emit();
+    try {
+      for (final entry in items.entries) {
+        if (_disposed) break;
+        final idx = entry.key;
+        final path = entry.value;
+        _setNotice('正在补传第 ${idx + 1} 段…');
+        try {
+          final text = await recognize(path);
+          if (_disposed) return;
+          // 该段原本在正文里已留下占位，补传结果明确标注段号追加到末尾，
+          // 用户一眼能看出它属于哪里，不会误以为顺序错乱。
+          _onText?.call('〔补传 第 ${idx + 1} 段〕\n$text');
+          _queued.remove(idx);
+          await _deleteQuietly(path);
+          _paths.remove(idx);
+        } on AsrException catch (e) {
+          _failed[idx] = path;
+          _onError?.call('第 ${idx + 1} 段补传仍失败：${e.message}');
+        } catch (e) {
+          _failed[idx] = path;
+          _onError?.call('第 ${idx + 1} 段补传仍失败：$e');
+        }
+        _emit();
+      }
+    } finally {
+      _retrying = false;
+      _setNotice(null);
+      _emit();
+    }
+  }
+
+  Future<void> _deleteQuietly(String path) async {
+    try {
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
+  }
+
+  /// 清掉上次崩溃/强杀遗留的临时音频，避免缓存目录无限增长
+  Future<void> _sweepStaleFiles() async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final cutoff =
+          DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
+      await for (final entity in dir.list()) {
+        if (entity is! File) continue;
+        final name = entity.uri.pathSegments.last;
+        if (!name.startsWith('classnote_') || !name.endsWith('.wav')) continue;
+        try {
+          final st = await entity.stat();
+          if (st.modified.millisecondsSinceEpoch < cutoff) {
+            await entity.delete();
+          }
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('[asr] 清理旧临时文件失败: $e');
+    }
+  }
+
+  // ─────────────────────── 网络 ───────────────────────
+
+  /// 把一段音频转成文字。
   /// 硅基流动 whisper 式接口：POST multipart/form-data，字段 file + model，返回 {"text": ...}。
+  /// 失败抛 AsrException，由调用方决定是否重试。注意：这里**不删除文件**，
+  /// 删除交给调用方，否则重试时会发现文件已经没了。
   Future<String> recognize(String filePath) async {
     final apiKey = await _settings.getAsrKey();
-    if (apiKey.isEmpty) throw Exception('请先在「设置」里填写硅基流动 API Key');
+    if (apiKey.isEmpty) {
+      throw AsrException('请先在「设置」里填写硅基流动 API Key', retryable: false);
+    }
 
     final file = File(filePath);
-    if (!await file.exists()) throw Exception('录音文件不存在');
+    if (!await file.exists()) {
+      throw AsrException('录音文件不存在', retryable: false);
+    }
 
-    // multipart 上传：文件字段叫 file，模型字段叫 model
     final uri = Uri.parse(AppConfig.asrBaseUrl);
     final request = http.MultipartRequest('POST', uri)
       ..headers['Authorization'] = 'Bearer $apiKey'
       ..fields['model'] = AppConfig.asrModel
-      ..files.add(await http.MultipartFile.fromPath('file', filePath, filename: 'audio.wav'));
+      ..files.add(await http.MultipartFile.fromPath('file', filePath,
+          filename: 'audio.wav'));
 
     late final http.StreamedResponse streamed;
     try {
       streamed = await request.send().timeout(const Duration(seconds: 120));
+    } on TimeoutException {
+      throw AsrException('上传超时（弱网），可重试');
     } catch (e) {
-      throw Exception('网络请求失败，请检查网络后重试（$e）');
+      throw AsrException('网络请求失败，请检查网络（$e）');
     }
+
     final response = await http.Response.fromStream(streamed);
 
     if (response.statusCode == 401 || response.statusCode == 403) {
-      throw Exception('硅基流动 API Key 无效或未实名，请到设置里检查 Key');
+      throw AsrException('硅基流动 API Key 无效或未实名，请到设置里检查 Key',
+          retryable: false, statusCode: response.statusCode);
     }
     if (response.statusCode == 429) {
-      throw Exception('请求太频繁，请稍后再试');
+      throw AsrException('请求太频繁，稍后自动重试', statusCode: 429);
+    }
+    if (response.statusCode >= 500) {
+      throw AsrException('服务端错误（${response.statusCode}），稍后自动重试',
+          statusCode: response.statusCode);
     }
     if (response.statusCode != 200) {
       String detail = response.body;
       try {
-        final err = jsonDecode(response.body);
-        detail = err['message'] ?? err['data'] ?? response.body;
+        final err = jsonDecodeOrNull(response.body);
+        if (err != null) detail = '${err['message'] ?? err['data'] ?? response.body}';
       } catch (_) {}
-      final s = detail.toString();
-      throw Exception('识别失败（${response.statusCode}）：${s.length > 120 ? s.substring(0, 120) : s}');
+      final s = detail;
+      throw AsrException(
+        '识别失败（${response.statusCode}）：${s.length > 120 ? s.substring(0, 120) : s}',
+        retryable: false,
+        statusCode: response.statusCode,
+      );
     }
 
-    final data = jsonDecode(response.body);
-    final text = data['text'] as String?;
+    final err = jsonDecodeOrNull(response.body);
+    final text = err?['text'] as String?;
     if (text == null || text.trim().isEmpty) {
-      throw Exception('有一段没识别到文字，可能环境太吵');
+      // 空结果多半是这段没人说话或环境太吵，重试意义不大
+      throw AsrException('这一段没识别到文字，可能环境太吵或这段没人说话',
+          retryable: false);
     }
-    // 录完一段就删掉本地临时文件，省空间
-    try { await file.delete(); } catch (_) {}
     return text.trim();
   }
 
+  static Map<String, dynamic>? jsonDecodeOrNull(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 释放资源：取消计时器、清空队列、断掉回调，并停止/销毁录音器。
+  /// 页面 dispose 时调用；置空回调可防止上传结果打到已销毁的 State 上。
   Future<void> dispose() async {
+    _disposed = true;
     _chunkTimer?.cancel();
-    await _recorder.dispose();
+    _chunkTimer = null;
+    _onText = null;
+    _onError = null;
+    _queue.clear();
+    _queued.clear();
+    _paths.clear();
+    _results.clear();
+    _failed.clear();
+    final c = _idleCompleter;
+    _idleCompleter = null;
+    if (c != null && !c.isCompleted) c.complete();
+    try {
+      if (await _recorder.isRecording()) await _recorder.stop();
+    } catch (_) {}
+    try {
+      await WakelockPlus.disable();
+    } catch (_) {}
+    try {
+      await _recorder.dispose();
+    } catch (_) {}
   }
 }

@@ -8,18 +8,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 访问网络状态：判断网络是否可用（可选但推荐） -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- 蓝牙权限：语音识别可配合蓝牙耳机使用（speech_to_text 要求） -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-
-    <!-- Android 11(API 30)+ 必须声明，否则 App 发现不了系统语音识别服务，
-         会直接导致「语音初始化失败」 -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-    </queries>
+    <!-- 唤醒锁：录音期间保持 CPU 运行，避免锁屏后麦克风采集被系统掐断 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 说明：旧版这里还有三条蓝牙权限和一个 RecognitionService 的 queries 块，
+         它们是已删除的 speech_to_text（系统语音引擎方案）遗留的，
+         现在走的是「录音上传硅基流动识别」，不需要蓝牙，已一并移除。 -->
 
     <application
         android:label="课堂笔记"

@@ -1,12 +1,29 @@
 // lib/pages/home_page.dart
 // 首页：笔记列表。展示本地保存的所有课堂笔记，可新建、可删除。
-import 'package:flutter/material.dart';
+// 顶部会把「未完成的草稿」单独提出来，方便崩溃/误退后继续记录。
+import 'package:material_ui/material_ui.dart';
 
 import '../models/note.dart';
 import '../services/db_service.dart';
 import 'record_page.dart';
 import 'note_detail_page.dart';
 import 'settings_page.dart';
+
+/// 列表项用的轻量模型：只带列表要显示的字段 + 预计算好的摘要。
+/// 不直接复用 Note，原因是两小时课堂的正文有三四万字，
+/// 在 build 里对每条笔记做 replaceAll 正则会明显掉帧。
+class _NoteItem {
+  final Note note;
+  final String preview;
+
+  _NoteItem(this.note) : preview = _makePreview(note.transcript);
+
+  static String _makePreview(String transcript) {
+    // 只截前 120 字再压缩空白，正则的处理量从「整篇」降到「120 字」
+    final head = transcript.length > 120 ? transcript.substring(0, 120) : transcript;
+    return head.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+}
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,7 +34,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final DbService _db = DbService();
-  List<Note> _notes = [];
+  List<_NoteItem> _notes = [];
   bool _loading = true;
 
   @override
@@ -28,13 +45,16 @@ class _HomePageState extends State<HomePage> {
 
   /// 从数据库刷新列表
   Future<void> _loadNotes() async {
+    // 启动时顺手清理一天前的空白草稿（用户点进录音页又立刻退出留下的）
+    try {
+      await _db.purgeEmptyDrafts();
+    } catch (_) {}
     final notes = await _db.queryAll();
-    if (mounted) {
-      setState(() {
-        _notes = notes;
-        _loading = false;
-      });
-    }
+    if (!mounted) return;
+    setState(() {
+      _notes = notes.map((n) => _NoteItem(n)).toList();
+      _loading = false;
+    });
   }
 
   /// 点击"新建课堂" -> 跳到记录页；返回后刷新列表
@@ -42,7 +62,15 @@ class _HomePageState extends State<HomePage> {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const RecordPage()),
     );
-    _loadNotes();
+    await _loadNotes();
+  }
+
+  /// 继续编辑一条草稿
+  Future<void> _continueDraft(String id) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => RecordPage(draftId: id)),
+    );
+    await _loadNotes();
   }
 
   /// 删除笔记（带二次确认）
@@ -53,19 +81,26 @@ class _HomePageState extends State<HomePage> {
         title: const Text('删除笔记'),
         content: Text('确定删除「${note.title}」吗？此操作不可恢复。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('删除')),
         ],
       ),
     );
     if (confirm == true) {
       await _db.delete(note.id);
-      _loadNotes();
+      await _loadNotes();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final drafts = _notes.where((i) => i.note.isDraft).toList();
+    final done = _notes.where((i) => !i.note.isDraft).toList();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('我的课堂笔记'),
@@ -83,10 +118,21 @@ class _HomePageState extends State<HomePage> {
           ? const Center(child: CircularProgressIndicator())
           : _notes.isEmpty
               ? _buildEmpty()
-              : ListView.builder(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: _notes.length,
-                  itemBuilder: (context, index) => _buildNoteCard(_notes[index]),
+              : RefreshIndicator(
+                  onRefresh: _loadNotes,
+                  child: ListView(
+                    padding: const EdgeInsets.all(12),
+                    children: [
+                      if (drafts.isNotEmpty) ...[
+                        _buildSectionTitle('未完成（可继续记录）', drafts.length),
+                        ...drafts.map((i) => _buildNoteCard(i, isDraft: true)),
+                        const SizedBox(height: 8),
+                        if (done.isNotEmpty)
+                          _buildSectionTitle('已完成笔记', done.length),
+                      ],
+                      ...done.map((i) => _buildNoteCard(i, isDraft: false)),
+                    ],
+                  ),
                 ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _goToRecord,
@@ -96,36 +142,71 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildEmpty() {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: const [
-          Icon(Icons.menu_book_outlined, size: 80, color: Colors.grey),
-          SizedBox(height: 16),
-          Text('还没有笔记', style: TextStyle(fontSize: 18, color: Colors.grey)),
-          SizedBox(height: 8),
-          Text('点右下角「新建课堂」开始记录吧', style: TextStyle(color: Colors.grey)),
+  Widget _buildSectionTitle(String text, int count) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
+      child: Row(
+        children: [
+          Text(text,
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade700)),
+          const SizedBox(width: 6),
+          Text('$count',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
         ],
       ),
     );
   }
 
-  Widget _buildNoteCard(Note note) {
+  Widget _buildEmpty() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.menu_book_outlined, size: 80, color: Colors.grey),
+          SizedBox(height: 16),
+          Text('还没有笔记', style: TextStyle(fontSize: 18, color: Colors.grey)),
+          SizedBox(height: 8),
+          Text('点右下角「新建课堂」开始记录吧',
+              style: TextStyle(color: Colors.grey)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoteCard(_NoteItem item, {required bool isDraft}) {
+    final note = item.note;
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: note.hasSummary ? Colors.teal.shade100 : Colors.indigo.shade100,
+          backgroundColor: isDraft
+              ? Colors.orange.shade100
+              : note.hasSummary
+                  ? Colors.teal.shade100
+                  : Colors.indigo.shade100,
           child: Icon(
-            note.hasSummary ? Icons.account_tree : Icons.description,
-            color: note.hasSummary ? Colors.teal : Colors.indigo,
+            isDraft
+                ? Icons.play_circle_outline
+                : note.hasSummary
+                    ? Icons.account_tree
+                    : Icons.description,
+            color: isDraft
+                ? Colors.orange.shade800
+                : note.hasSummary
+                    ? Colors.teal
+                    : Colors.indigo,
           ),
         ),
         title: Text(note.title, maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text(
-          '${_formatDate(note.createdAt)}  ·  ${_formatDuration(note.duration)}'
-          '\n${note.transcript.replaceAll(RegExp(r'\s+'), ' ')}',
+          isDraft
+              ? '${_formatDate(note.createdAt)}  ·  已录 ${_formatDuration(note.duration)}'
+                  '  ·  ${item.preview.isEmpty ? '（还没有文字）' : item.preview}'
+              : '${_formatDate(note.createdAt)}  ·  ${_formatDuration(note.duration)}'
+                  '\n${item.preview}',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),
@@ -135,10 +216,15 @@ class _HomePageState extends State<HomePage> {
           onPressed: () => _deleteNote(note),
         ),
         onTap: () async {
-          await Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => NoteDetailPage(noteId: note.id)),
-          );
-          _loadNotes();
+          if (isDraft) {
+            await _continueDraft(note.id);
+          } else {
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                  builder: (_) => NoteDetailPage(noteId: note.id)),
+            );
+            await _loadNotes();
+          }
         },
       ),
     );
@@ -148,7 +234,7 @@ class _HomePageState extends State<HomePage> {
       '${dt.month}月${dt.day}日 ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
   String _formatDuration(int seconds) {
-    if (seconds < 60) return '${seconds}秒';
+    if (seconds < 60) return '$seconds秒';
     return '${seconds ~/ 60}分${seconds % 60}秒';
   }
 }

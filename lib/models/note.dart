@@ -4,12 +4,16 @@
 
 /// 一条课堂笔记
 class Note {
+  static const String statusDraft = 'draft'; // 录音中/未点「完成并记录」
+  static const String statusDone = 'done'; // 已正式保存
+
   final String id;          // 唯一 ID（uuid 生成）
   final String title;       // 课程名
   final String transcript;  // 原始转写文字
   final String? summaryJson;// AI 总结（结构化 JSON 字符串，用于生成思维导图）
   final DateTime createdAt; // 创建时间
   final int duration;       // 录音时长（秒）
+  final String status;      // draft / done，见上方常量
 
   Note({
     required this.id,
@@ -18,10 +22,14 @@ class Note {
     this.summaryJson,
     required this.createdAt,
     this.duration = 0,
+    this.status = statusDone,
   });
 
   /// 是否已生成总结
   bool get hasSummary => summaryJson != null && summaryJson!.isNotEmpty;
+
+  /// 是否是「还没点完成」的草稿（崩溃/误退后可在首页继续）
+  bool get isDraft => status == statusDraft;
 
   /// 数据库 -> 对象
   factory Note.fromMap(Map<String, dynamic> map) {
@@ -32,6 +40,8 @@ class Note {
       summaryJson: map['summary_json'] as String?,
       createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int),
       duration: (map['duration'] as int?) ?? 0,
+      // 老库没有 status 列时按「已完成」处理，保持向后兼容
+      status: (map['status'] as String?) ?? statusDone,
     );
   }
 
@@ -44,18 +54,31 @@ class Note {
       'summary_json': summaryJson,
       'created_at': createdAt.millisecondsSinceEpoch,
       'duration': duration,
+      'status': status,
     };
   }
 
   /// 复制并更新部分字段（如写入 AI 总结后返回新对象）
-  Note copyWith({String? summaryJson, String? transcript, int? duration}) {
+  ///
+  /// summaryJson 支持「显式清空」：传 [clearSummary] = true 时把总结置为 null。
+  /// 旧版只有 `summaryJson ?? this.summaryJson` 一种语义，导致总结一旦生成就再也
+  /// 无法清除（传 null 会被当成「不修改」）。
+  Note copyWith({
+    String? summaryJson,
+    bool clearSummary = false,
+    String? title,
+    String? transcript,
+    int? duration,
+    String? status,
+  }) {
     return Note(
       id: id,
-      title: title,
+      title: title ?? this.title,
       transcript: transcript ?? this.transcript,
-      summaryJson: summaryJson ?? this.summaryJson,
+      summaryJson: clearSummary ? null : (summaryJson ?? this.summaryJson),
       createdAt: createdAt,
       duration: duration ?? this.duration,
+      status: status ?? this.status,
     );
   }
 }
