@@ -1,0 +1,40 @@
+name: classnote
+description: 课堂实时语音转写、AI 总结与思维导图生成 App
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  # 实时语音转文字（Android / iOS 双端）
+  speech_to_text: ^7.5.0
+  # 调用 DeepSeek 大模型 API 做总结
+  http: ^1.2.0
+  # 本地笔记数据库
+  sqflite: ^2.3.2
+  path: ^1.9.0
+  # 生成唯一 ID
+  uuid: ^4.4.0
+  # 本地键值存储：保存 API Key 等设置
+  shared_preferences: ^2.5.6
+  # 系统分享面板：导出思维导图图片
+  share_plus: ^13.3.1
+  # 获取应用文档目录：临时存放导出图片
+  path_provider: ^2.1.6
+  # 录音：录一段音频后上传云端识别（不依赖系统语音引擎）
+  record: ^7.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  # 如需添加图片/字体，放到 assets/ 目录并在此处声明，例如：
+  # assets:
+  #   - assets/images/
