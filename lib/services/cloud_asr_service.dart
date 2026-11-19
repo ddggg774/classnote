@@ -26,6 +26,7 @@ import 'package:record/record.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../config.dart';
+import 'foreground_service.dart';
 import 'settings_service.dart';
 
 /// 识别异常：区分「重试有用」和「重试没用」。
@@ -99,6 +100,7 @@ class AsrProgress {
 class CloudAsrService {
   final AudioRecorder _recorder = AudioRecorder();
   final SettingsService _settings = SettingsService();
+  final ForegroundRecordingService _foreground = ForegroundRecordingService();
 
   /// 每段时长（秒）。60 秒而不是 300 秒，原因有三：
   /// ① 首段出字从 5 分钟缩短到 1 分钟，用户不会以为 App 卡死；
@@ -171,9 +173,7 @@ class CloudAsrService {
     _recording = false;
     _chunkTimer?.cancel();
     _chunkTimer = null;
-    try {
-      await WakelockPlus.disable();
-    } catch (_) {}
+    await _releaseKeepAlive();
     final path = _currentPath;
     final idx = _chunkIndex;
     _currentPath = null;
@@ -275,16 +275,40 @@ class CloudAsrService {
 
     _recording = true;
     _emit();
-    // 录音期间保持唤醒：课堂场景用户经常锁屏把手机放桌上，
-    // 不加这个，Android 会在锁屏后限制麦克风采集、并让 Timer 随进程休眠停掉，
-    // 结果是「界面还在显示录音，实际早就没在录」。
-    // 注意：wakelock 只能保 CPU/屏幕，真正抗后台回收仍需前台服务（见 README 说明）。
+    // 录音期间保持唤醒 + 起前台服务：
+    // 课堂场景用户经常锁屏把手机放桌上录一两个小时。
+    //   - wakelock：保 CPU 不休眠，防止 Timer 被挂起导致「不再切段」；
+    //   - 前台服务：把进程优先级提到最高，防止被系统当后台进程回收。
+    // 两者都失败也不阻断录音，只是降级为「仅前台运行可用」，所以要 try 包住。
     try {
       await WakelockPlus.enable();
     } catch (e) {
       debugPrint('[asr] 开启唤醒锁失败: $e');
     }
+    try {
+      await _foreground.start();
+    } catch (e) {
+      debugPrint('[asr] 启动前台服务失败: $e');
+    }
+
     _chunkTimer = Timer.periodic(const Duration(seconds: 1), _tick);
+  }
+
+  /// 释放「保活手段」：关唤醒锁 + 停前台服务。
+  /// 三个退出口（正常停止 / 检测到被中断 / dispose）都走这里，避免漏关导致
+  /// 通知栏一直挂着「正在录音」、或者电量被持续消耗。
+  /// 所有异常都吞掉：关不掉保活不应该阻断收尾流程。
+  Future<void> _releaseKeepAlive() async {
+    try {
+      await WakelockPlus.disable();
+    } catch (e) {
+      debugPrint('[asr] 关闭唤醒锁失败: $e');
+    }
+    try {
+      await _foreground.stop();
+    } catch (e) {
+      debugPrint('[asr] 停止前台服务失败: $e');
+    }
   }
 
   void _tick(Timer _) {
@@ -292,6 +316,13 @@ class CloudAsrService {
     _recordedSeconds++;
     _segmentElapsed++;
     _emit();
+    // 通知栏文案每 5 秒同步一次就够（每秒更新反而费电，用户锁屏时也看不清）
+    if (_recordedSeconds % 5 == 0) {
+      unawaited(_foreground.update(
+        title: '课堂笔记正在录音 ${AsrProgress.formatSeconds(_recordedSeconds)}',
+        text: '第 ${_chunkIndex + 1} 段 · 已转写 ${progress.value.doneSegments} 段',
+      ));
+    }
     if (_segmentElapsed >= chunkSeconds) {
       _segmentElapsed = 0;
       // 切段放到互斥链上，与停止操作串行
@@ -361,11 +392,8 @@ class CloudAsrService {
     _chunkTimer = null;
     if (!_recording) return;
     _recording = false;
-    try {
-      await WakelockPlus.disable();
-    } catch (e) {
-      debugPrint('[asr] 关闭唤醒锁失败: $e');
-    }
+    // 注意：这里**先不关**前台服务。停止录音时最后一段还没上传完，
+    // 此时若用户锁屏离开，进程被回收同样会丢数据。等队列排空后再释放。
 
     final path = _currentPath;
     final idx = _chunkIndex;
@@ -383,7 +411,17 @@ class CloudAsrService {
 
     // 等队列排空。用 Completer 而不是 200ms 忙轮询，并加总超时兜底，
     // 避免任何未预料的异常让界面永久卡在「正在转写」。
-    if (_queue.isEmpty && !_processing) return;
+    if (_queue.isEmpty && !_processing) {
+      await _releaseKeepAlive();
+      return;
+    }
+
+    // 通知改成「正在转写」，让用户知道还可以安全锁屏
+    unawaited(_foreground.update(
+      title: '正在转写最后几段…',
+      text: '转写完成后会自动结束，期间可安全锁屏',
+    ));
+
     _idleCompleter ??= Completer<void>();
     try {
       await _idleCompleter!.future.timeout(timeout);
@@ -391,6 +429,8 @@ class CloudAsrService {
       _onError?.call('部分分段转写超时，已完成的文字已保留，剩余可在下方补传');
     } finally {
       _idleCompleter = null;
+      // 收尾：无论成功还是超时，都要把前台服务和唤醒锁释放掉
+      await _releaseKeepAlive();
     }
   }
 
@@ -636,9 +676,7 @@ class CloudAsrService {
     try {
       if (await _recorder.isRecording()) await _recorder.stop();
     } catch (_) {}
-    try {
-      await WakelockPlus.disable();
-    } catch (_) {}
+    await _releaseKeepAlive();
     try {
       await _recorder.dispose();
     } catch (_) {}

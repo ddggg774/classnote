@@ -28,6 +28,7 @@ dependencies:
   # 录音期间保持屏幕/CPU 唤醒，避免锁屏后麦克风采集被系统掐断
   wakelock_plus: ^1.2.10
   material_ui: ^1.11.1
+  flutter_foreground_task: ^11.0.3
 
 dev_dependencies:
   flutter_test:

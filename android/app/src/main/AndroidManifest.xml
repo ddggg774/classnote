@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 唤醒锁：录音期间保持 CPU 运行，避免锁屏后麦克风采集被系统掐断 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 前台服务：录音期间常驻，把进程优先级提到最高，防止锁屏后被系统回收。
+         Android 9+ 起前台服务必须声明 FOREGROUND_SERVICE；
+         Android 14+（API 34）起还必须按类型声明具体权限，录音用 microphone 类型。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- 通知权限：Android 13+（API 33）起常驻通知需要用户授权，否则前台服务通知不显示 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 说明：旧版这里还有三条蓝牙权限和一个 RecognitionService 的 queries 块，
          它们是已删除的 speech_to_text（系统语音引擎方案）遗留的，
          现在走的是「录音上传硅基流动识别」，不需要蓝牙，已一并移除。 -->
@@ -36,6 +43,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 录音前台服务。必须手动注册，否则 startService 时直接崩。
+             android:name 不能改（插件按全限定类名查找）。
+             foregroundServiceType 用 microphone：录音属于麦克风类型，
+             对应 FOREGROUND_SERVICE_MICROPHONE 权限。 -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
