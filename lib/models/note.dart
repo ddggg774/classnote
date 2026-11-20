@@ -14,6 +14,8 @@ class Note {
   final DateTime createdAt; // 创建时间
   final int duration;       // 录音时长（秒）
   final String status;      // draft / done，见上方常量
+  /// 课前术语表（TerminologyPack 的 JSON），可为空
+  final String? terminologyJson;
 
   Note({
     required this.id,
@@ -23,6 +25,7 @@ class Note {
     required this.createdAt,
     this.duration = 0,
     this.status = statusDone,
+    this.terminologyJson,
   });
 
   /// 是否已生成总结
@@ -42,6 +45,7 @@ class Note {
       duration: (map['duration'] as int?) ?? 0,
       // 老库没有 status 列时按「已完成」处理，保持向后兼容
       status: (map['status'] as String?) ?? statusDone,
+      terminologyJson: map['terminology_json'] as String?,
     );
   }
 
@@ -55,6 +59,7 @@ class Note {
       'created_at': createdAt.millisecondsSinceEpoch,
       'duration': duration,
       'status': status,
+      'terminology_json': terminologyJson,
     };
   }
 
@@ -70,6 +75,8 @@ class Note {
     String? transcript,
     int? duration,
     String? status,
+    String? terminologyJson,
+    bool clearTerminology = false,
   }) {
     return Note(
       id: id,
@@ -79,6 +86,9 @@ class Note {
       createdAt: createdAt,
       duration: duration ?? this.duration,
       status: status ?? this.status,
+      terminologyJson: clearTerminology
+          ? null
+          : (terminologyJson ?? this.terminologyJson),
     );
   }
 }

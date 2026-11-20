@@ -18,8 +18,9 @@ class DbService {
   static final DbService _instance = DbService._internal();
   factory DbService() => _instance;
 
-  /// 当前 schema 版本。v1 = 初始；v2 = 增加 status（草稿/已完成）。
-  static const int dbVersion = 2;
+  /// 当前 schema 版本。
+  /// v1 = 初始；v2 = 增加 status（草稿/已完成）；v3 = 增加 terminology_json（课前术语表）。
+  static const int dbVersion = 3;
 
   Database? _db;
 
@@ -40,7 +41,8 @@ class DbService {
             summary_json TEXT,
             created_at INTEGER NOT NULL,
             duration INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'done'
+            status TEXT NOT NULL DEFAULT 'done',
+            terminology_json TEXT
           )
         ''');
       },
@@ -52,6 +54,14 @@ class DbService {
             'notes',
             'status',
             "TEXT NOT NULL DEFAULT 'done'",
+          );
+        }
+        if (oldVersion < 3) {
+          await _addColumnIfMissing(
+            db,
+            'notes',
+            'terminology_json',
+            'TEXT',
           );
         }
       },

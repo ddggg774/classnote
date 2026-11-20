@@ -15,8 +15,9 @@ import '../models/study_note.dart';
 import '../services/db_service.dart';
 import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
-import '../services/settings_service.dart';
+import '../services/terminology_service.dart';
 import '../services/transcript_corrector.dart';
+import '../models/terminology.dart';
 import '../widgets/mind_graph_tree.dart';
 import '../widgets/mind_map_widget.dart';
 
@@ -33,16 +34,19 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   final DbService _db = DbService();
   final AiService _ai = AiService();
   final TranscriptCorrector _corrector = TranscriptCorrector();
-  final SettingsService _settingsService = SettingsService();
+  final TerminologyService _terminologyService = TerminologyService();
   final TextEditingController _transcriptController = TextEditingController();
 
-  /// 正在做 AI 纠错
+  /// 正在做术语准备或质量校准
   bool _correcting = false;
+  bool _preparing = false;
   /// 正在保存原文（防止连点）
   bool _savingTranscript = false;
-  /// 本次纠错的改动清单
-  List<CorrectionChange> _corrections = const [];
-  /// 纠错前的原文，用于撤销
+  /// 课前术语包
+  TerminologyPack? _terms;
+  /// 本次校准报告（四段式）
+  CalibrationReport? _report;
+  /// 校准前的原文，用于撤销
   String? _undoTranscript;
 
   late TabController _tabController;
@@ -92,6 +96,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _mindMap = parsed?.mindMap;
       _graph = parsed?.graph;
       _activeBranch = null;
+      _terms = TerminologyPack.tryDecode(note.terminologyJson);
       _detailMarkdown = parsed?.detailMarkdown ?? '';
     });
   }
@@ -142,9 +147,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       if (!mounted) return;
       setState(() {
         _note = updated;
-        // 保存后纠错标记就该清了：改动已经落库，再"撤销"会与库里的内容不一致
+        // 保存后撤销快照就该清了：改动已经落库，再"撤销"会与库里内容不一致
         _undoTranscript = null;
-        _corrections = const [];
+        _report = null;
       });
       _showSnack('原文已保存');
     } finally {
@@ -256,8 +261,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     );
   }
 
-  /// Tab 1：原文（可编辑 + 保存）
+  /// Tab 1：原文（可编辑 + 保存 + 课前术语准备 + 质量校准）
   Widget _buildTranscriptTab() {
+    final report = _report;
     return Column(
       children: [
         Expanded(
@@ -270,123 +276,406 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               textAlignVertical: TextAlignVertical.top,
               // 总结期间锁住编辑：避免「总结的是改到一半的文本」这种歧义
               readOnly: _summarizing,
+              style: const TextStyle(fontSize: 14.5, height: 1.6),
               decoration: InputDecoration(
                 hintText: '课堂原文，可直接修改',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),
           ),
         ),
+
+        // ── 报告区（可滚动，默认折叠成摘要）──
+        if (report != null) _buildReportPanel(report),
+
+        // ── 操作区 ──
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: Row(
+          child: Column(
             children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _savingTranscript ? null : _saveTranscript,
-                  icon: const Icon(Icons.save_outlined),
-                  label: const Text('保存原文'),
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _preparing ? null : _prepareTerminology,
+                      icon: _preparing
+                          ? const SizedBox(
+                              width: 15,
+                              height: 15,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.menu_book_outlined, size: 17),
+                      label: Text(
+                        _preparing
+                            ? '生成术语表…'
+                            : (_terms == null ? '课前术语准备' : '术语表'),
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      // 质量校准：按 A/B/C 三档规则处理，不润色不改写
+                      onPressed: _correcting ? null : _calibrate,
+                      icon: _correcting
+                          ? const SizedBox(
+                              width: 15,
+                              height: 15,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.spellcheck, size: 17),
+                      label: Text(_correcting ? '校准中…' : '质量校准',
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  // AI 纠错：修 ASR 听岔的字词，不润色、不改内容
-                  onPressed: _correcting ? null : _correctTranscript,
-                  icon: _correcting
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.spellcheck, size: 18),
-                  label: Text(_correcting ? '纠错中…' : 'AI 纠错'),
-                ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _savingTranscript ? null : _saveTranscript,
+                      icon: const Icon(Icons.save_outlined, size: 17),
+                      label: const Text('保存原文',
+                          style: TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (_undoTranscript != null)
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _undoCalibration,
+                        icon: const Icon(Icons.undo, size: 17),
+                        label: const Text('撤销校准',
+                            style: TextStyle(fontSize: 13)),
+                      ),
+                    ),
+                ],
               ),
             ],
           ),
         ),
-        // 纠错结果：显示改了什么，并允许撤销
-        if (_corrections.isNotEmpty)
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.green.shade50,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.green.shade200),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.auto_fix_high,
-                        size: 16, color: Colors.green.shade700),
-                    const SizedBox(width: 6),
-                    Text('已修正 ${_corrections.length} 处',
-                        style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.green.shade800)),
-                    const Spacer(),
-                    if (_undoTranscript != null)
-                      TextButton(
-                        onPressed: _undoCorrection,
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          minimumSize: const Size(0, 30),
-                        ),
-                        child: const Text('撤销', style: TextStyle(fontSize: 12)),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                ..._corrections.take(8).map((c) => Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(
-                        '${c.before} → ${c.after}',
-                        style: TextStyle(
-                            fontSize: 12, color: Colors.grey.shade800),
-                      ),
-                    )),
-                if (_corrections.length > 8)
-                  Text('…等共 ${_corrections.length} 处',
-                      style: TextStyle(
-                          fontSize: 11, color: Colors.grey.shade600)),
-              ],
-            ),
-          ),
       ],
     );
   }
 
-  /// AI 纠错：只修 ASR 听岔的字词，不润色不改写。
-  /// 结果先写进编辑框但**不落库**，用户点「保存原文」才生效；
-  /// 同时保留一份撤销快照，改坏了能退回去。
-  Future<void> _correctTranscript() async {
+  /// 四段式校准报告面板
+  Widget _buildReportPanel(CalibrationReport report) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: report.isLowQuality ? Colors.orange.shade50 : Colors.green.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+            color: report.isLowQuality
+                ? Colors.orange.shade200
+                : Colors.green.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ① 概要
+          Row(
+            children: [
+              Icon(
+                report.isLowQuality
+                    ? Icons.warning_amber_rounded
+                    : Icons.auto_fix_high,
+                size: 16,
+                color: report.isLowQuality
+                    ? Colors.orange.shade800
+                    : Colors.green.shade700,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  report.isLowQuality
+                      ? '本节转写可用性偏低'
+                      : '已修正 ${report.fixCount} 个术语 · '
+                          '命中 ${report.hits.length} 个 · '
+                          '待确认 ${report.pending.length} 处',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: report.isLowQuality
+                        ? Colors.orange.shade900
+                        : Colors.green.shade800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          // 可用性评估（质量过低时）
+          if (report.isLowQuality) ...[
+            const SizedBox(height: 6),
+            Text(report.usability!,
+                style: TextStyle(fontSize: 12, color: Colors.orange.shade900)),
+          ],
+
+          // 未出现的术语
+          if (report.missedTerms.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _reportSectionTitle('未出现的术语（建议回听）'),
+            Text(report.missedTerms.join('、'),
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade800)),
+          ],
+
+          // ③ 待确认清单
+          if (report.pending.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _reportSectionTitle('待确认清单'),
+            ...report.pending.take(6).map((p) => Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Text(
+                    '· ${p.snippet}'
+                    '${p.candidates.isNotEmpty ? '〔疑似：${p.candidates.join(' / ')}〕' : ''}'
+                    '${p.count > 1 ? '（出现 ${p.count} 次）' : ''}'
+                    '${p.timestamp != null ? ' @${p.timestamp}' : ''}',
+                    style: TextStyle(
+                        fontSize: 11.5, color: Colors.grey.shade800),
+                  ),
+                )),
+            if (report.pending.length > 6)
+              Text('…等共 ${report.pending.length} 处',
+                  style:
+                      TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+          ],
+
+          // ④ 拾音建议
+          if (report.micAdvice.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _reportSectionTitle('拾音改进建议'),
+            ...report.micAdvice.map((a) => Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text('· $a',
+                      style: TextStyle(
+                          fontSize: 11.5, color: Colors.grey.shade800)),
+                )),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _reportSectionTitle(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Text(text,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade700)),
+      );
+
+  /// 课前术语准备：根据课程信息生成术语表 / initial_prompt / 拾音风险提示。
+  /// 结果存进 notes.terminology_json，供后续校准使用。
+  Future<void> _prepareTerminology() async {
+    final note = _note;
+    if (note == null || _preparing) return;
+
+    final courseCtrl = TextEditingController(text: note.title);
+    final topicCtrl = TextEditingController();
+    final materialCtrl = TextEditingController();
+    final knownCtrl = TextEditingController();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('课前术语准备'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: courseCtrl,
+                decoration: const InputDecoration(
+                    labelText: '课程名', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: topicCtrl,
+                decoration: const InputDecoration(
+                    labelText: '本章节主题', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: materialCtrl,
+                decoration: const InputDecoration(
+                    labelText: '教材/PPT 标题（可选）',
+                    border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: knownCtrl,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                    labelText: '已知专有名词（可选，逗号分隔）',
+                    border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('生成')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    final course = courseCtrl.text.trim();
+    final topic = topicCtrl.text.trim();
+    final material = materialCtrl.text.trim();
+    final known = knownCtrl.text.trim();
+    courseCtrl.dispose();
+    topicCtrl.dispose();
+    materialCtrl.dispose();
+    knownCtrl.dispose();
+
+    if (course.isEmpty) {
+      _showSnack('课程名不能为空');
+      return;
+    }
+
+    setState(() => _preparing = true);
+    try {
+      final pack = await _terminologyService.prepare(
+        courseName: course,
+        topic: topic,
+        material: material,
+        knownTerms: known,
+      );
+      final updated =
+          note.copyWith(terminologyJson: pack.encode());
+      await _db.update(updated);
+      if (!mounted) return;
+      setState(() {
+        _note = updated;
+        _terms = pack;
+      });
+      _showTerminologySheet(pack);
+    } catch (e) {
+      _showSnack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _preparing = false);
+    }
+  }
+
+  /// 展示术语表（可复制 initial_prompt）
+  void _showTerminologySheet(TerminologyPack pack) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        maxChildSize: 0.92,
+        expand: false,
+        builder: (ctx, scrollController) => ListView(
+          controller: scrollController,
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          children: [
+            Row(
+              children: [
+                const Text('本节课术语表',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const Spacer(),
+                Text('${pack.terms.length} 条',
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.grey.shade600)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ...TermLevel.values.expand((level) {
+              final list = pack.byLevel(level);
+              if (list.isEmpty) return <Widget>[];
+              return [
+                Padding(
+                  padding: const EdgeInsets.only(top: 8, bottom: 4),
+                  child: Text('${level.label}优先级（${level.meaning}）',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.indigo.shade800)),
+                ),
+                ...list.map((t) => Padding(
+                      padding: const EdgeInsets.only(left: 4, top: 2),
+                      child: Text('· ${t.display}',
+                          style: const TextStyle(fontSize: 12.5)),
+                    )),
+              ];
+            }),
+            if (pack.initialPrompt.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Text('initial_prompt',
+                  style:
+                      TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              SelectableText(pack.initialPrompt,
+                  style: TextStyle(
+                      fontSize: 12, color: Colors.grey.shade800)),
+              const SizedBox(height: 4),
+              Text(
+                '硅基流动的识别接口不支持 initial_prompt，所以本 App 会把它'
+                '注入到「质量校准」的提示词里使用；需要时也可复制到支持该参数的工具。',
+                style:
+                    TextStyle(fontSize: 11, color: Colors.grey.shade600),
+              ),
+            ],
+            if (pack.riskHints.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Text('本节课拾音风险',
+                  style:
+                      TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              ...pack.riskHints.map((h) => Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text('· $h',
+                        style: TextStyle(
+                            fontSize: 12, color: Colors.grey.shade800)),
+                  )),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 质量校准：按 A/B/C 三档规则处理，不润色、不补全。
+  /// 结果先写进编辑框但不落库，用户点「保存原文」才生效。
+  Future<void> _calibrate() async {
     if (_note == null || _correcting) return;
     final original = _transcriptController.text;
     if (original.trim().length < 10) {
-      _showSnack('内容太短，不需要纠错');
+      _showSnack('内容太短，不需要校准');
       return;
     }
     setState(() => _correcting = true);
     try {
-      final glossary = await _settingsService.getGlossary();
-      final result = await _corrector.correct(original, glossary: glossary);
+      final report =
+          await _corrector.calibrate(original, pack: _terms);
       if (!mounted) return;
-      if (result.changes.isEmpty) {
-        _showSnack('没有发现明显的识别错误');
-        return;
-      }
       setState(() {
         _undoTranscript = original;
-        _transcriptController.text = result.corrected;
-        _corrections = result.changes;
+        if (report.hasText) _transcriptController.text = report.annotatedText;
+        _report = report;
       });
-      _showSnack('已修正 ${result.changes.length} 处，确认后可点「保存原文」');
+      if (report.isLowQuality) {
+        _showSnack('本节转写质量偏低，已给出可用性评估而非强行纠错');
+      } else {
+        _showSnack('已校准：修正 ${report.fixCount} 处，'
+            '待确认 ${report.pending.length} 处');
+      }
     } catch (e) {
       _showSnack(e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -394,15 +683,15 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     }
   }
 
-  void _undoCorrection() {
+  void _undoCalibration() {
     final original = _undoTranscript;
     if (original == null) return;
     setState(() {
       _transcriptController.text = original;
       _undoTranscript = null;
-      _corrections = const [];
+      _report = null;
     });
-    _showSnack('已撤销纠错');
+    _showSnack('已撤销校准');
   }
 
   /// Tab 2：文字版总结（要点列表）
