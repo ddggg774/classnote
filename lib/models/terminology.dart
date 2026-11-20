@@ -215,12 +215,55 @@ class PendingItem {
   /// 时间戳（转写文本带时间戳时才有）
   final String? timestamp;
 
+  /// 该片段在正文中的所有字符偏移量（升序）。
+  /// 由程序用 indexOf 算出，**不让模型返回**——模型数不准字符位置，
+  /// 让它给偏移只会拿到一堆对不上的数字。
+  final List<int> positions;
+
   const PendingItem({
     required this.snippet,
     this.candidates = const [],
     this.count = 1,
     this.timestamp,
+    this.positions = const [],
   });
+
+  /// 第一次出现的位置；没定位到返回 null
+  int? get firstPosition => positions.isEmpty ? null : positions.first;
+
+  /// 是否能跳转定位
+  bool get canLocate => positions.isNotEmpty;
+
+  /// 带上位置的新对象
+  PendingItem withPositions(List<int> pos) => PendingItem(
+        snippet: snippet,
+        candidates: candidates,
+        count: count,
+        timestamp: timestamp,
+        positions: pos,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'snippet': snippet,
+        if (candidates.isNotEmpty) 'candidates': candidates,
+        if (count != 1) 'count': count,
+        if (timestamp != null) 'timestamp': timestamp,
+        if (positions.isNotEmpty) 'positions': positions,
+      };
+
+  factory PendingItem.fromJson(Map<String, dynamic> json) => PendingItem(
+        snippet: json['snippet'] as String? ?? '',
+        candidates: (json['candidates'] as List?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            const [],
+        count: (json['count'] as num?)?.toInt() ?? 1,
+        timestamp: json['timestamp'] as String?,
+        positions: (json['positions'] as List?)
+                ?.map((e) => (e as num).toInt())
+                .toList() ??
+            const [],
+      );
 }
 
 /// 术语命中情况
@@ -268,4 +311,38 @@ class CalibrationReport {
   int get fixCount => hits.where((h) => h.corrected).length;
   bool get hasText => annotatedText.trim().isNotEmpty;
   bool get isLowQuality => (usability ?? '').trim().isNotEmpty;
+
+  /// 给待确认项补上原文中的位置，供界面点击跳转。
+  ///
+  /// [source] 应该是**纠错前的原始转写**（用户框里看到的那份），
+  /// 而不是 annotatedText——因为 annotatedText 里插了各种 〔…〕 标注，
+  /// 偏移量和用户看到的文本对不上，跳过去会错位。
+  ///
+  /// 一件事只做一次：snippet 为空或找不到就保持 positions 为空，
+  /// 界面据此决定是否可点，不伪造位置。
+  CalibrationReport withLocations(String source) {
+    if (source.isEmpty || pending.isEmpty) return this;
+    return CalibrationReport(
+      annotatedText: annotatedText,
+      hits: hits,
+      missedTerms: missedTerms,
+      pending: pending.map((p) {
+        final snippet = p.snippet.trim();
+        if (snippet.isEmpty) return p;
+        final found = <int>[];
+        var from = 0;
+        while (true) {
+          final idx = source.indexOf(snippet, from);
+          if (idx < 0) break;
+          found.add(idx);
+          // 跳过本次匹配，避免死循环
+          from = idx + snippet.length;
+          if (from >= source.length) break;
+        }
+        return found.isEmpty ? p : p.withPositions(found);
+      }).toList(),
+      micAdvice: micAdvice,
+      usability: usability,
+    );
+  }
 }

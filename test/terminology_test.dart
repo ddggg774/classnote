@@ -150,7 +150,135 @@ void main() {
       expect(correctorChunkLimit, 6000);
     });
   });
+
+  // 待确认项定位（点击跳转的基础）
+  _locationTests();
 }
 
 /// 分块上限的常量引用，避免测试里魔法数字
 const int correctorChunkLimit = TranscriptCorrector.chunkChars;
+// ─────────────────────────────────────────────────────────────
+// 待确认项定位（点击跳转的基础）
+// 这块是纯函数，最容易出错的是「偏移量算错一位」和「死循环」，
+// 所以边界要测够：开头、结尾、多次出现、找不到、空片段。
+// ─────────────────────────────────────────────────────────────
+void _locationTests() {
+  group('待确认项定位 withLocations', () {
+    test('能定位到中间位置的片段', () {
+      const src = '今天讲木兰科的心脾结构，注意心脾的数目。';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '心脾', candidates: ['心皮'])],
+      );
+      final located = report.withLocations(src);
+      expect(located.pending.first.positions, [7, 14]);
+      expect(located.pending.first.firstPosition, 7);
+      expect(located.pending.first.canLocate, isTrue);
+    });
+
+    test('多次出现全部记录，且不死循环', () {
+      const src = '甲：心脾。乙：心脾。丙：心脾。';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '心脾')],
+      );
+      final located = report.withLocations(src);
+      expect(located.pending.first.positions.length, 3);
+      expect(located.pending.first.count, 1,
+          reason: 'count 是模型标的出现次数，定位不该改它');
+    });
+
+    test('片段在开头', () {
+      const src = '心脾很重要，后面还会再讲。';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '心脾')],
+      );
+      expect(report.withLocations(src).pending.first.firstPosition, 0);
+    });
+
+    test('片段在结尾', () {
+      const src = '最后讲的是心脾';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '心脾')],
+      );
+      final pos = report.withLocations(src).pending.first.firstPosition;
+      expect(pos, src.length - 2);
+    });
+
+    test('找不到时保持不可定位，不伪造位置', () {
+      const src = '这段话里没有那个词。';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '木兰科')],
+      );
+      final located = report.withLocations(src);
+      expect(located.pending.first.canLocate, isFalse);
+      expect(located.pending.first.positions, isEmpty);
+      expect(located.pending.first.firstPosition, isNull);
+    });
+
+    test('空片段不参与定位（避免 indexOf 死循环）', () {
+      const src = '有内容的文本';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '')],
+      );
+      final located = report.withLocations(src);
+      expect(located.pending.first.positions, isEmpty);
+    });
+
+    test('空原文直接返回原报告', () {
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '心脾')],
+      );
+      final located = report.withLocations('');
+      expect(identical(located, report), isTrue);
+    });
+
+    test('只有首尾空白时按 trim 后的片段定位', () {
+      const src = '前面有心脾在后面';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [PendingItem(snippet: '  心脾  ')],
+      );
+      expect(report.withLocations(src).pending.first.firstPosition, 3);
+    });
+
+    test('定位不改动报告的其他字段', () {
+      const report = CalibrationReport(
+        annotatedText: '标注后的正文',
+        hits: [TermHit(term: '心皮', corrected: true, occurrences: 2)],
+        missedTerms: ['托叶'],
+        pending: [PendingItem(snippet: '心脾')],
+        micAdvice: ['远场拾音注意前后鼻音'],
+        usability: '可用性偏低',
+      );
+      final located = report.withLocations('讲心脾的位置');
+      expect(located.annotatedText, '标注后的正文');
+      expect(located.hits.length, 1);
+      expect(located.missedTerms, ['托叶']);
+      expect(located.micAdvice, ['远场拾音注意前后鼻音']);
+      expect(located.usability, '可用性偏低');
+      expect(located.fixCount, 1);
+    });
+
+    test('多个待确认项各自独立定位', () {
+      const src = '心脾在前，雄瑞群在后，心脾又提了一次。';
+      const report = CalibrationReport(
+        annotatedText: '',
+        pending: [
+          PendingItem(snippet: '心脾'),
+          PendingItem(snippet: '雄瑞群'),
+          PendingItem(snippet: '不存在的词'),
+        ],
+      );
+      final located = report.withLocations(src);
+      expect(located.pending[0].positions.length, 2);
+      expect(located.pending[1].positions.length, 1);
+      expect(located.pending[2].canLocate, isFalse);
+    });
+  });
+}

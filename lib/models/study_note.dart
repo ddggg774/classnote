@@ -14,6 +14,7 @@ import 'dart:convert';
 
 import 'mind_graph.dart';
 import 'note.dart' show MindMapData;
+import 'terminology.dart';
 
 /// 一次「详细总结」的产物
 class StudySummary {
@@ -29,11 +30,17 @@ class StudySummary {
   /// 本次总结是否按「超长课堂」做了分块合并（用于界面上提示用户）
   final bool chunked;
 
+  /// 纠错留下的待确认项（Agent 跑完后要能在详情页看到并点击定位）。
+  /// 存在这里而不是单独建表：它本来就是"这次生成的产物"，
+  /// 与总结同一次落库、同一次读取，不会出现两处不同步。
+  final List<PendingItem> pending;
+
   const StudySummary({
     required this.detailMarkdown,
     required this.mindMap,
     required this.graph,
     this.chunked = false,
+    this.pending = const [],
   });
 
   Map<String, dynamic> toJson() => {
@@ -42,6 +49,8 @@ class StudySummary {
         'mindMap': mindMap.toJson(),
         'graph': graph.toJson(),
         'chunked': chunked,
+        if (pending.isNotEmpty)
+          'pending': pending.map<Map<String, dynamic>>((p) => p.toJson()).toList(),
       };
 
   factory StudySummary.fromJson(Map<String, dynamic> json) {
@@ -64,6 +73,11 @@ class StudySummary {
       mindMap: mindMap,
       graph: graph,
       chunked: json['chunked'] as bool? ?? false,
+      pending: (json['pending'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .map(PendingItem.fromJson)
+              .toList() ??
+          const [],
     );
   }
 

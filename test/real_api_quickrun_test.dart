@@ -12,6 +12,7 @@ import 'package:classnote/models/mind_graph.dart';
 import 'package:classnote/models/note.dart';
 import 'package:classnote/models/study_note.dart';
 import 'package:classnote/models/summary_level.dart';
+import 'package:classnote/models/terminology.dart';
 
 const _transcript = '''
 今天我们讲被子植物的木兰科。木兰科它是原始被子植物的代表类群。
@@ -109,6 +110,86 @@ void main() {
           reason: 'legacy mindMap 必须由 graph 反推出来，否则大纲 Tab 会空白');
       // ignore: avoid_print
       print('=== legacy 大纲 ${decoded.mindMap.nodes.length} 个一级节点');
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
+    test('待确认项带上位置并能随总结落库', () async {
+      if (!enabled) {
+        markTestSkipped('未设置 DS_KEY');
+        return;
+      }
+      final agent = ClassroomAgent(apiKey: key);
+      final result = await agent.run(
+        const ClassroomRequest(
+          courseName: '植物学',
+          chapter: '第三章 被子植物',
+          level: SummaryLevel.normal,
+          existingTranscript: _transcript,
+        ),
+      );
+
+      // ignore: avoid_print
+      print('=== Agent 返回的待确认项 ${result.pendingNotes.length} 条');
+      for (final n in result.pendingNotes) {
+        // ignore: avoid_print
+        print('  · $n');
+      }
+
+      // 把待确认项按 record_page 的方式构造并定位
+      final source = result.finalText ?? '';
+      final items = <PendingItem>[];
+      for (final note in result.pendingNotes) {
+        if (note.startsWith('〔缺失〕')) {
+          items.add(PendingItem(snippet: note.substring(4).trim()));
+          continue;
+        }
+        final m = RegExp(r'^(.*?)(?:〔疑似：(.*?)〕)?$').firstMatch(note);
+        final snippet = (m?.group(1) ?? note).trim();
+        final candRaw = m?.group(2) ?? '';
+        items.add(PendingItem(
+          snippet: snippet,
+          candidates: candRaw
+              .split('/')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
+        ));
+      }
+      final located = CalibrationReport(
+        annotatedText: '',
+        pending: items,
+      ).withLocations(source);
+
+      // ignore: avoid_print
+      print('=== 定位结果（共 ${located.pending.length} 条）');
+      for (final p in located.pending) {
+        // ignore: avoid_print
+        print('  · ${p.snippet} → '
+            '${p.canLocate ? '可定位 @${p.firstPosition}' : '不可定位'}');
+      }
+
+      // 落库往返
+      final json = StudySummary(
+        detailMarkdown: result.summary ?? '',
+        mindMap: MindMapData(root: '植物学', nodes: const []),
+        graph: result.graph ??
+            MindGraph.fromLegacyMindMap(
+                MindMapData(root: '', nodes: const [])),
+        pending: located.pending,
+      ).encode();
+      final decoded = StudySummary.tryDecode(json);
+      expect(decoded, isNotNull);
+      expect(decoded!.pending.length, located.pending.length,
+          reason: '待确认项必须随总结落库并能读回');
+
+      // 有定位的项，位置必须在正文范围内
+      for (final p in decoded.pending.where((p) => p.canLocate)) {
+        expect(p.firstPosition! >= 0, isTrue);
+        expect(p.firstPosition! + p.snippet.length <= source.length, isTrue,
+            reason: '位置越界会导致跳转时选中错误内容');
+      }
+      // ignore: avoid_print
+      print('=== 往返解码后 ${decoded.pending.length} 条，'
+          '其中 ${decoded.pending.where((p) => p.canLocate).length} 条可定位');
     }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('关掉导图时不产出导图', () async {

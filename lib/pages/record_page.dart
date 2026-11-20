@@ -19,6 +19,7 @@ import '../models/mind_graph.dart';
 import '../models/note.dart';
 import '../models/study_note.dart';
 import '../models/summary_level.dart';
+import '../models/terminology.dart';
 import '../services/cloud_asr_service.dart';
 import '../services/db_service.dart';
 import '../services/settings_service.dart';
@@ -442,7 +443,41 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           : MindGraph.fromLegacyMindMap(
               MindMapData(root: '', nodes: const []),
             ),
+      // 待确认项必须落库：否则用户退出详情页再进来就看不到，
+      // 「点击定位」也失去了对象。
+      pending: _buildPendingItems(result),
     ).encode();
+  }
+
+  /// Agent 返回的是纯文本形式的待确认描述，这里转成可持久化的结构，
+  /// 并顺手在正文里定位——落库时就带上位置，
+  /// 详情页读出来直接可点，不用再算一遍。
+  List<PendingItem> _buildPendingItems(ClassroomResult result) {
+    if (result.pendingNotes.isEmpty) return const [];
+    final source = result.finalText ?? '';
+    final items = <PendingItem>[];
+    for (final note in result.pendingNotes) {
+      // pendingNotes 的格式是 "片段〔疑似：候选〕" 或 "〔缺失〕描述"
+      if (note.startsWith('〔缺失〕')) {
+        items.add(PendingItem(snippet: note.substring(4).trim()));
+        continue;
+      }
+      final m = RegExp(r'^(.*?)(?:〔疑似：(.*?)〕)?$').firstMatch(note);
+      final snippet = (m?.group(1) ?? note).trim();
+      final candRaw = m?.group(2) ?? '';
+      final candidates = candRaw
+          .split('/')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      items.add(PendingItem(snippet: snippet, candidates: candidates));
+    }
+    // 用原文定位，保证详情页点击能跳对位置
+    final located = CalibrationReport(
+      annotatedText: '',
+      pending: items,
+    ).withLocations(source);
+    return located.pending;
   }
 
   /// 把 3-5 级 graph 压成两层 MindMapData（给旧的「大纲」Tab 与 PNG 导出）

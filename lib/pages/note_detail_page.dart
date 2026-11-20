@@ -47,6 +47,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   TerminologyPack? _terms;
   /// 本次校准报告（四段式）
   CalibrationReport? _report;
+
+  /// 从库里读出的、上次 Agent 跑完留下的待确认项。
+  /// 与 _report 分开：_report 是本次点「质量校准」的即时结果，
+  /// 这个是历史存档，两者不互相覆盖。
+  List<PendingItem> _savedPending = const [];
   /// 校准前的原文，用于撤销
   String? _undoTranscript;
 
@@ -101,6 +106,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _activeBranch = null;
       _terms = TerminologyPack.tryDecode(note.terminologyJson);
       _detailMarkdown = parsed?.detailMarkdown ?? '';
+      _savedPending = parsed?.pending ?? const [];
     });
   }
 
@@ -351,6 +357,10 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         // ── 报告区（可滚动，默认折叠成摘要）──
         if (report != null) _buildReportPanel(report),
 
+        // ── 上次「一键处理」留下的待确认（库里的，不是本次校准的）──
+        if (report == null && _savedPending.isNotEmpty)
+          _buildSavedPendingPanel(),
+
         // ── 操作区 ──
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
@@ -425,6 +435,123 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   }
 
   /// 四段式校准报告面板
+  /// 上次「一键处理」留下的待确认项。
+  /// 与本次校准报告分开显示：这是历史存档，重进页面也还在。
+  Widget _buildSavedPendingPanel() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.help_outline,
+                  size: 16, color: Colors.orange.shade800),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '上次处理留下 ${_savedPending.length} 处待确认',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.orange.shade900,
+                  ),
+                ),
+              ),
+              // 全部确认后可以清掉，避免一直挂着
+              TextButton(
+                onPressed: _correcting ? null : _clearSavedPending,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('已核对，清除', style: TextStyle(fontSize: 11.5)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '点一下可跳到原文对应位置回听',
+            style: TextStyle(fontSize: 11, color: Colors.orange.shade700),
+          ),
+          const SizedBox(height: 4),
+          ..._savedPending.map((p) => InkWell(
+                onTap: p.canLocate ? () => _jumpToPending(p) : null,
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 1, right: 4),
+                        child: Icon(
+                          p.canLocate
+                              ? Icons.my_location
+                              : Icons.remove_circle_outline,
+                          size: 12,
+                          color: p.canLocate
+                              ? Colors.indigo.shade400
+                              : Colors.grey.shade400,
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          '${p.snippet}'
+                          '${p.candidates.isNotEmpty ? '〔疑似：${p.candidates.join(' / ')}〕' : ''}'
+                          '${p.count > 1 ? '（出现 ${p.count} 次）' : ''}',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: Colors.grey.shade800,
+                            decoration: p.canLocate
+                                ? TextDecoration.underline
+                                : null,
+                            decorationStyle: TextDecorationStyle.dotted,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )),
+        ],
+      ),
+    );
+  }
+
+  /// 清除已核对的待确认项（只清存档，不动原文与总结）
+  Future<void> _clearSavedPending() async {
+    final note = _note;
+    if (note == null) return;
+    final parsed = StudySummary.tryDecode(note.summaryJson);
+    if (parsed == null) return;
+
+    final updated = note.copyWith(
+      summaryJson: StudySummary(
+        detailMarkdown: parsed.detailMarkdown,
+        mindMap: parsed.mindMap,
+        graph: parsed.graph,
+        chunked: parsed.chunked,
+        pending: const [],
+      ).encode(),
+    );
+    await _db.update(updated);
+    if (!mounted) return;
+    setState(() {
+      _note = updated;
+      _savedPending = const [];
+    });
+    _showSnack('已清除待确认清单');
+  }
+
   Widget _buildReportPanel(CalibrationReport report) {
     return Container(
       width: double.infinity,
@@ -492,15 +619,43 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           if (report.pending.isNotEmpty) ...[
             const SizedBox(height: 8),
             _reportSectionTitle('待确认清单'),
-            ...report.pending.take(6).map((p) => Padding(
-                  padding: const EdgeInsets.only(top: 3),
-                  child: Text(
-                    '· ${p.snippet}'
-                    '${p.candidates.isNotEmpty ? '〔疑似：${p.candidates.join(' / ')}〕' : ''}'
-                    '${p.count > 1 ? '（出现 ${p.count} 次）' : ''}'
-                    '${p.timestamp != null ? ' @${p.timestamp}' : ''}',
-                    style: TextStyle(
-                        fontSize: 11.5, color: Colors.grey.shade800),
+            ...report.pending.take(6).map((p) => InkWell(
+                  // 能定位的才可点：找不到位置就别给假跳转
+                  onTap: p.canLocate ? () => _jumpToPending(p) : null,
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (p.canLocate)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 1, right: 4),
+                            child: Icon(Icons.my_location,
+                                size: 12, color: Colors.indigo.shade400),
+                          )
+                        else
+                          const Padding(
+                            padding: EdgeInsets.only(top: 1, right: 4),
+                            child: Text('·', style: TextStyle(fontSize: 12)),
+                          ),
+                        Expanded(
+                          child: Text(
+                            '${p.snippet}'
+                            '${p.candidates.isNotEmpty ? '〔疑似：${p.candidates.join(' / ')}〕' : ''}'
+                            '${p.count > 1 ? '（出现 ${p.count} 次）' : ''}'
+                            '${p.timestamp != null ? ' @${p.timestamp}' : ''}',
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.grey.shade800,
+                                decoration: p.canLocate
+                                    ? TextDecoration.underline
+                                    : null,
+                                decorationStyle: TextDecorationStyle.dotted),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 )),
             if (report.pending.length > 6)
@@ -730,8 +885,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     }
     setState(() => _correcting = true);
     try {
-      final report =
+      final rawReport =
           await _corrector.calibrate(original, pack: _terms);
+      // 用「纠错前的原文」定位，不能用 annotatedText——
+      // 后者插了 〔改：…〕 之类的标注，偏移量和用户看到的对不上。
+      final report = rawReport.withLocations(original);
       if (!mounted) return;
       setState(() {
         _undoTranscript = original;
@@ -749,6 +907,34 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     } finally {
       if (mounted) setState(() => _correcting = false);
     }
+  }
+
+  /// 点击待确认项：跳到「原文」Tab 并选中对应片段。
+  ///
+  /// 【为什么跳原文而不是纠错后的文本】
+  /// 用户回听核对的对象是原始录音，原文才是他要听的那个版本。
+  /// 而且节点位置是按原文算的，跳到标注过的文本会错位。
+  void _jumpToPending(PendingItem item) {
+    final pos = item.firstPosition;
+    if (pos == null) return;
+
+    // 切到「原文」Tab
+    if (_tabIndex != 0) {
+      setState(() => _tabIndex = 0);
+      _tabController.animateTo(0);
+    }
+
+    // 选中片段：把光标区间设成整段，用户一眼能看到是哪个词
+    final text = _transcriptController.text;
+    final end = (pos + item.snippet.length).clamp(0, text.length);
+    if (pos >= 0 && pos < text.length) {
+      _transcriptController.selection =
+          TextSelection(baseOffset: pos, extentOffset: end);
+    }
+
+    _showSnack(item.count > 1
+        ? '已定位「${item.snippet}」，全文共出现 ${item.count} 次，这是第 1 处'
+        : '已定位「${item.snippet}」，请回听这段录音核对');
   }
 
   void _undoCalibration() {
