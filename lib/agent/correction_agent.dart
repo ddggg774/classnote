@@ -19,6 +19,7 @@ import '../models/terminology.dart';
 import '../services/terminology_service.dart';
 import 'agent_loop.dart';
 import 'agent_tool.dart';
+import 'terminology_store.dart';
 
 /// 纠错 Agent 运行期累积的产物
 class CorrectionSession {
@@ -34,6 +35,9 @@ class CorrectionSession {
   /// 本次用到的术语包
   TerminologyPack? pack;
 
+  /// 术语表是否直接命中缓存（用于日志与成本提示）
+  bool cacheHit = false;
+
   bool get hasFindings => pending.isNotEmpty || missing.isNotEmpty;
 }
 
@@ -46,7 +50,14 @@ class CorrectionAgent {
   final TerminologyPack? presetPack;
   final TerminologyService _terminologyService = TerminologyService();
 
-  CorrectionAgent({required this.apiKey, this.presetPack});
+  /// 术语表缓存仓库。传 null 表示不用缓存（测试场景）。
+  final TerminologyStore? _store;
+
+  CorrectionAgent({
+    required this.apiKey,
+    this.presetPack,
+    TerminologyStore? store,
+  }) : _store = store;
 
   /// 系统提示词：把之前定好的 A/B/C 三档规则原样写死在代码里。
   /// 这不是给用户看的说明，是给模型的硬约束。
@@ -112,16 +123,27 @@ class CorrectionAgent {
           final chapter = (args['chapter'] ?? '').toString().trim();
           session.lookups.add('$course/$chapter');
 
-          // 优先用外部注入的现成术语包（测试/预生成场景）
+          // 优先级：外部注入 > 本次已查过 > 数据库缓存 > 现场生成
+          // 现场生成要调模型、花钱花时间，所以能复用就复用。
           var pack = presetPack ?? session.pack;
+
+          if (pack == null && _store != null) {
+            pack = await _store!.get(course, chapter);
+            if (pack != null) {
+              session.pack = pack;
+              session.cacheHit = true;
+            }
+          }
+
           if (pack == null) {
-            // 没有现成包就现生成一份。这是真实检索，不是假装。
             try {
               pack = await _terminologyService.prepare(
                 courseName: course,
                 topic: chapter,
               );
               session.pack = pack;
+              // 生成成功后写缓存，下次同章节直接读
+              await _store?.put(course, chapter, pack);
             } catch (e) {
               return ToolResult.error(
                 '术语表检索失败（$e）。此时只能修正非常明显的同音错误，'

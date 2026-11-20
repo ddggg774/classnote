@@ -111,11 +111,19 @@ class AgentLoop {
   /// 可选的回调：每完成一步通知一次，界面用它做实时进度
   final void Function(AgentStep step)? onStep;
 
+  /// 请求地址。默认走 AppConfig，测试时可指向本地假服务器
+  /// —— 这样 Function Calling 协议（tool_calls 回填、role=tool 等）
+  /// 能在没有真实 Key、不烧钱的情况下被完整验证。
+  final String? baseUrlOverride;
+  final http.Client? httpClient;
+
   AgentLoop({
     required this.apiKey,
     required this.tools,
     required this.config,
     this.onStep,
+    this.baseUrlOverride,
+    this.httpClient,
   });
 
   /// 跑一轮 Agent。
@@ -258,16 +266,19 @@ class AgentLoop {
       body['tool_choice'] = 'auto';
     }
 
-    final response = await http
-        .post(
-          Uri.parse(AppConfig.deepSeekBaseUrl),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $apiKey',
-          },
-          body: jsonEncode(body),
-        )
-        .timeout(const Duration(seconds: 180));
+    final client = httpClient ?? http.Client();
+    final request = http.Request(
+      'POST',
+      Uri.parse(baseUrlOverride ?? AppConfig.deepSeekBaseUrl),
+    )
+      ..headers['Content-Type'] = 'application/json'
+      ..headers['Authorization'] = 'Bearer $apiKey'
+      ..body = jsonEncode(body);
+
+    final streamed =
+        await client.send(request).timeout(const Duration(seconds: 180));
+    final response = await http.Response.fromStream(streamed);
+    if (httpClient == null) client.close();
 
     if (response.statusCode == 401 || response.statusCode == 403) {
       throw Exception('API Key 无效，请到设置里检查');

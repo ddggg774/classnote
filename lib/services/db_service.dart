@@ -19,8 +19,10 @@ class DbService {
   factory DbService() => _instance;
 
   /// 当前 schema 版本。
-  /// v1 = 初始；v2 = 增加 status（草稿/已完成）；v3 = 增加 terminology_json（课前术语表）。
-  static const int dbVersion = 3;
+  /// v1 = 初始；v2 = 增加 status（草稿/已完成）；
+  /// v3 = 增加 terminology_json（课前术语表）；
+  /// v4 = 增加 terminology_cache 表（按课程+章节缓存术语表，避免重复生成）。
+  static const int dbVersion = 4;
 
   Database? _db;
 
@@ -45,6 +47,7 @@ class DbService {
             terminology_json TEXT
           )
         ''');
+        await _createTerminologyCache(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // 逐版本迁移，每个分支独立、可重入
@@ -64,9 +67,30 @@ class DbService {
             'TEXT',
           );
         }
+        if (oldVersion < 4) {
+          await _createTerminologyCache(db);
+        }
       },
     );
     return _db!;
+  }
+
+  /// 术语表缓存表。按「课程+章节」存一份生成好的术语包，
+  /// 同一章节第二次纠错直接读缓存，不再重复调模型。
+  /// 用 IF NOT EXISTS 保证迁移可重入。
+  Future<void> _createTerminologyCache(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS terminology_cache (
+        cache_key TEXT PRIMARY KEY,
+        course TEXT NOT NULL,
+        chapter TEXT NOT NULL,
+        pack_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_term_course ON terminology_cache(course)',
+    );
   }
 
   /// 加列前先查 PRAGMA table_info，保证迁移可重复执行（避免重复 ALTER 抛错）
