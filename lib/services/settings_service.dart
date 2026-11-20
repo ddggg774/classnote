@@ -24,6 +24,7 @@ class SettingsService {
   static const String _keyGlossary = 'glossary_terms';
   /// 转写完成后是否自动 AI 纠错
   static const String _keyAutoCorrect = 'auto_correct_enabled';
+  static const String _keyCaptureProfile = 'capture_profile';
 
   /// 旧键名，仅用于一次性迁移读取
   static const String _legacyAsrKey = 'aliyun_asr_key';
@@ -125,5 +126,16 @@ class SettingsService {
   Future<void> saveAutoCorrect(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyAutoCorrect, enabled);
+  }
+
+  /// 拾音档位（安静教室 / 普通教室 / 大教室后排）
+  Future<String> getCaptureProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_keyCaptureProfile) ?? 'normal';
+  }
+
+  Future<void> saveCaptureProfile(String code) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyCaptureProfile, code);
   }
 }

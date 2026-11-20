@@ -4,6 +4,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../config.dart';
+import '../services/audio_capture_profile.dart';
 import '../services/settings_service.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -25,6 +26,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String _asrModel = AppConfig.asrModel;
   /// 转写后是否自动 AI 纠错
   bool _autoCorrect = false;
+  CaptureProfile _captureProfile = CaptureProfile.normal;
 
   @override
   void initState() {
@@ -38,6 +40,8 @@ class _SettingsPageState extends State<SettingsPage> {
     final model = await _settings.getAsrModel();
     final glossary = await _settings.getGlossary();
     final auto = await _settings.getAutoCorrect();
+    final profileCode = await _settings.getCaptureProfile();
+    final profile = CaptureProfile.fromCode(profileCode);
     if (mounted) {
       setState(() {
         _deepSeekController.text = dsKey;
@@ -45,6 +49,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _glossaryController.text = glossary;
         _asrModel = model;
         _autoCorrect = auto;
+        _captureProfile = profile;
         _loading = false;
       });
     }
@@ -91,6 +96,7 @@ class _SettingsPageState extends State<SettingsPage> {
     await _settings.saveAsrModel(_asrModel);
     await _settings.saveGlossary(_glossaryController.text);
     await _settings.saveAutoCorrect(_autoCorrect);
+    await _settings.saveCaptureProfile(_captureProfile.name);
 
     if (!mounted) return;
     final kept = <String>[
@@ -301,6 +307,48 @@ class _SettingsPageState extends State<SettingsPage> {
                         TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
                   onChanged: (v) => setState(() => _autoCorrect = v),
+                ),
+                const SizedBox(height: 16),
+
+                // ── 拾音档位 ──
+                Row(
+                  children: [
+                    const Text('远场拾音',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 6),
+                    Text('当前：${_captureProfile.activeEffects}',
+                        style: TextStyle(
+                            fontSize: 11.5, color: Colors.grey.shade600)),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '降噪 / 自动增益 / 回声消除由系统音频框架在录音时处理，'
+                  '不额外耗电、不增加安装包体积。坐后排录课建议选「大教室/后排」。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                const SizedBox(height: 4),
+                RadioGroup<CaptureProfile>(
+                  groupValue: _captureProfile,
+                  onChanged: (v) {
+                    if (v != null) setState(() => _captureProfile = v);
+                  },
+                  child: Column(
+                    children: CaptureProfile.values
+                        .map((p) => RadioListTile<CaptureProfile>(
+                              value: p,
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(p.label,
+                                  style: const TextStyle(fontSize: 13.5)),
+                              subtitle: Text(p.description,
+                                  style: TextStyle(
+                                      fontSize: 11.5,
+                                      color: Colors.grey.shade600)),
+                            ))
+                        .toList(),
+                  ),
                 ),
                 const SizedBox(height: 16),
 

@@ -27,6 +27,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../config.dart';
 import 'foreground_service.dart';
+import 'audio_capture_profile.dart';
 import 'settings_service.dart';
 
 /// 识别异常：区分「重试有用」和「重试没用」。
@@ -99,6 +100,14 @@ class AsrProgress {
 
 class CloudAsrService {
   final AudioRecorder _recorder = AudioRecorder();
+
+  /// 当前拾音档位（降噪/增益/回声消除）。
+  /// 在录音开始时读一次并缓存，录音中途改设置不影响本次录音——
+  /// 中途切换 AudioEffect 会让这一段的音质出现断层。
+  CaptureProfile _profile = CaptureProfile.normal;
+
+  /// 供界面显示"现在开了哪些音频处理"
+  CaptureProfile get captureProfile => _profile;
   final SettingsService _settings = SettingsService();
   final ForegroundRecordingService _foreground = ForegroundRecordingService();
 
@@ -259,6 +268,10 @@ class CloudAsrService {
       return;
     }
 
+    // 读拾音档位：录音中改设置不影响本次，避免 AudioEffect 中途切换造成音质断层
+    _profile = CaptureProfile.fromCode(await _settings.getCaptureProfile());
+    debugPrint('[asr] 拾音档位=${_profile.label}，开启：${_profile.activeEffects}');
+
     await _sweepStaleFiles();
 
     // 先启动录音，成功了才把 _recording 置 true —— 顺序颠倒会造成
@@ -336,12 +349,7 @@ class CloudAsrService {
     final dir = await getTemporaryDirectory();
     _currentPath =
         '${dir.path}/classnote_${DateTime.now().microsecondsSinceEpoch}_$_chunkIndex.wav';
-    const config = RecordConfig(
-      encoder: AudioEncoder.wav,
-      sampleRate: 16000,
-      numChannels: 1,
-    );
-    await _recorder.start(config, path: _currentPath!);
+    await _recorder.start(_profile.toRecordConfig(), path: _currentPath!);
   }
 
   /// 切段：停当前段 → 入队 → 立刻开始下一段（录音不中断）
