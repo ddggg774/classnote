@@ -536,10 +536,16 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     final topic = topicCtrl.text.trim();
     final material = materialCtrl.text.trim();
     final known = knownCtrl.text.trim();
-    courseCtrl.dispose();
-    topicCtrl.dispose();
-    materialCtrl.dispose();
-    knownCtrl.dispose();
+    // 先读值，等对话框关闭动画播完再 dispose。
+    // 直接在这里 dispose 会崩：showDialog 返回只是路由开始出栈，
+    // 关闭动画期间 TextField 仍挂在树上引用这些 controller，
+    // 释放后会抛 "A TextEditingController was used after being disposed"。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      courseCtrl.dispose();
+      topicCtrl.dispose();
+      materialCtrl.dispose();
+      knownCtrl.dispose();
+    });
 
     if (course.isEmpty) {
       _showSnack('课程名不能为空');

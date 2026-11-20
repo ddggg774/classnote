@@ -18,6 +18,9 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    # tool/ 是命令行调试脚本，用 print 输出结果是正当用途，
+    # 不参与 App 的 lint 规则（否则 avoid_print 会一直报警）。
+    - tool/**
 
 linter:
   # The lint rules applied to this project can be customized in the
