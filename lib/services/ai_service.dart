@@ -19,6 +19,7 @@ import 'package:http/http.dart' as http;
 import '../config.dart';
 import '../models/mind_graph.dart';
 import '../models/note.dart';
+import '../models/summary_level.dart';
 import '../models/study_note.dart';
 import 'settings_service.dart';
 
@@ -36,6 +37,12 @@ class AiException implements Exception {
 
 class AiService {
   final SettingsService _settings = SettingsService();
+
+  /// 直接注入的 API Key。传了就优先用它，跳过 SharedPreferences。
+  /// 用途：命令行/测试环境没有 App 的 SharedPreferences，但需要跑真实调用。
+  final String? apiKeyOverride;
+
+  AiService({this.apiKeyOverride});
 
   /// 单次请求能安全送进去的字数。deepseek-chat 上下文 64K token，
   /// 中文约 1 字 ≈ 1 token，留出 system 提示与输出空间后取 8000 字比较稳。
@@ -215,25 +222,129 @@ class AiService {
 mark 只能是 key/hard/pitfall/exam/unconfirmed/quote/none。
 ''';
 
+  // ───────────────────── 按档位构造提示词 ─────────────────────
+
+  /// 教材信息片段：匹配到教材就带上，否则空串。
+  /// 带教材名的意义：模型知道"方炎明《植物学》第三版"这一章的通常术语体系，
+  /// 纠错时更可能认对"木兰科/离生心皮"这类词，而不是瞎猜。
+  static String _textbookBlock(String courseName) {
+    final line = AppConfig.textbookLine(courseName);
+    if (line.isEmpty) return '';
+    return '\n## 教材\n$line\n（术语与章节体系以该教材为准；不确定的内容仍要标待确认，不许凭空补）\n';
+  }
+
+  /// 按档位组装主提示词。
+  /// 三档的差异只在「保留哪些章节」+「是否要原文引证」，不按字数裁剪——
+  /// 按字数会逼模型注水或删干货。
+  static String buildPromptForLevel(
+    SummaryLevel level, {
+    String courseName = '',
+  }) {
+    final textbook = _textbookBlock(courseName);
+
+    switch (level) {
+      case SummaryLevel.brief:
+        return '''
+你是一名课堂笔记整理助手。请把课堂转写稿整理成一份**速览版**笔记，目标是考前一分钟能扫完。
+$textbook
+## 只输出这三节，不要写别的
+# 课程信息
+- 课程名 / 本节主题
+
+# 知识点结构
+按层级列出核心知识点（只写知识点名称与一句话定义，不展开推导、不写例题）
+
+# 老师强调与考试作业提示
+- 重点 / 易错点 / 考试范围 / 作业要求与截止时间（没提到写"未提及"）
+
+## 规则
+- 绝对不编造。缺失内容写"未提及"。
+- 这一档只求"能快速扫一遍回忆起讲了什么"，不要展开细节。
+- 篇幅控制在原文的 5%~10%。
+
+最后附一个 JSON 代码块供思维导图使用（没有内容的分支也要保留，内部写"未提及"）：
+```json
+{"root":"课程主题","branches":[{"id":"b0","title":"知识点结构","children":[{"id":"b0-1","title":"具体节点名","details":["一句话说明"],"children":[]}]}]}
+```
+''';
+
+      case SummaryLevel.detail:
+        // 先做档位替换，再把教材拼上去——顺序反了教材会丢
+        final detailPrompt = _detailSystemPrompt.replaceFirst(
+          '## 整理要求',
+          '''## 本档特别要求（详细版）
+在下面所有章节里，**每个知识点、每道例题、每条考试作业提示**都要附上：
+- 原文引用：用「」引出老师原话片段
+- 时间戳：如果转写稿带时间戳就标（如 12:30），没有就省略时间戳只留引用
+
+引用必须逐字来自原文，不许改写、不许编造。
+引用和正文用换行分开，格式示例：
+  - 定义：……（正文）
+    > 「老师原话……」（03:20）
+
+## 整理要求''',
+        );
+        return textbook.isEmpty
+            ? detailPrompt
+            : '$detailPrompt\n$textbook';
+
+      case SummaryLevel.normal:
+        return textbook.isEmpty
+            ? _detailSystemPrompt
+            : '$_detailSystemPrompt\n$textbook';
+    }
+  }
+
+  /// 分块整理用的提示词（长课堂才有），带上教材信息
+  static String buildChunkPrompt({String courseName = ''}) {
+    final textbook = _textbookBlock(courseName);
+    if (textbook.isEmpty) return _chunkSystemPrompt;
+    return '$textbook\n$_chunkSystemPrompt';
+  }
+
+  /// 合并用的提示词（长课堂才有），带上教材信息
+  static String buildMergePrompt(
+    SummaryLevel level, {
+    String courseName = '',
+  }) {
+    final textbook = _textbookBlock(courseName);
+    if (textbook.isEmpty) return _mergeSystemPrompt;
+    return '$textbook\n$_mergeSystemPrompt';
+  }
+
   // ───────────────────────── 对外入口 ─────────────────────────
 
-  /// 生成详细课堂笔记。
+  /// 生成课堂笔记。默认 standard（九段式）。
+  ///
+  /// [level] 控制详细度：
+  ///   brief  只留知识点层级 + 考试作业提示
+  ///   normal 完整九段式
+  ///   detail 九段式 + 原文引用与时间戳
+  ///
+  /// [courseName] 用于自动带上教材信息（AppConfig.textbooks）。
   /// 返回 [StudySummary]（Markdown + 思维导图结构）；网络/解析失败抛 [AiException]。
-  Future<StudySummary> summarize(String transcript) async {
+  Future<StudySummary> summarize(
+    String transcript, {
+    SummaryLevel level = SummaryLevel.normal,
+    String courseName = '',
+  }) async {
     final text = transcript.trim();
     if (text.length < 10) {
       throw AiException('内容太短，暂时无法总结', retryable: false);
     }
 
-    final apiKey = await _settings.getApiKey();
+    final apiKey = apiKeyOverride ?? await _settings.getApiKey();
     if (apiKey.isEmpty) {
       throw AiException('请先在「设置」里填写 DeepSeek API Key',
           needSettings: true, retryable: false);
     }
 
+    // 按档位选择提示词，并把教材信息拼进去
+    final systemPrompt = buildPromptForLevel(level, courseName: courseName);
+
     // 短课堂：一次调用搞定
     if (text.length <= chunkChars) {
-      final raw = await _chat(apiKey, _detailSystemPrompt, text);
+      final raw = await _chat(apiKey, systemPrompt, text);
       return _parseSummary(raw, chunked: false);
     }
 
@@ -243,7 +354,7 @@ mark 只能是 key/hard/pitfall/exam/unconfirmed/quote/none。
     for (var i = 0; i < chunks.length; i++) {
       final part = await _chat(
         apiKey,
-        _chunkSystemPrompt,
+        buildChunkPrompt(courseName: courseName),
         '这是同一节课转写稿的第 ${i + 1}/${chunks.length} 段：\n\n${chunks[i]}',
       );
       partials.add(part);
@@ -251,7 +362,7 @@ mark 只能是 key/hard/pitfall/exam/unconfirmed/quote/none。
 
     final merged = await _chat(
       apiKey,
-      _mergeSystemPrompt,
+      buildMergePrompt(level, courseName: courseName),
       partials
           .asMap()
           .entries

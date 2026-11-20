@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 import '../models/mind_graph.dart';
 import '../models/note.dart';
 import '../models/study_note.dart';
+import '../models/summary_level.dart';
 import '../services/db_service.dart';
 import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
@@ -61,6 +62,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 详细课堂笔记正文（九段式 Markdown）。为空表示还没有生成过详细笔记（老数据）。
   String _detailMarkdown = '';
   bool _summarizing = false;
+  /// 总结详细度，默认标准档
+  SummaryLevel _level = SummaryLevel.normal;
   bool _exporting = false;
   bool _notFound = false;
   int _tabIndex = 0;
@@ -101,6 +104,57 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     });
   }
 
+  /// 先选档位，再生成。
+  /// 档位决定输出结构（brief 只有三节、detail 带原文引用），
+  /// 不该让用户"生成完才发现选错了"。
+  Future<void> _pickLevelThenGenerate() async {
+    final picked = await _pickLevel();
+    if (picked == null) return;
+    await _generateSummary();
+  }
+
+  /// 选择总结档位（速览 / 标准 / 详细）。返回 null 表示用户取消。
+  Future<SummaryLevel?> _pickLevel() async {
+    final picked = await showModalBottomSheet<SummaryLevel>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  Text('总结详细度',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+            ...SummaryLevel.values.map((lv) => ListTile(
+                  leading: Icon(
+                    lv == _level
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    color: lv == _level ? Colors.indigo : Colors.grey,
+                  ),
+                  title: Text(lv.label),
+                  subtitle: Text(lv.description,
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.grey.shade600)),
+                  onTap: () => Navigator.pop(ctx, lv),
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return null;
+    setState(() => _level = picked);
+    return picked;
+  }
+
   /// 调用 AI 生成详细笔记（同时生成思维导图），结果写回数据库。
   /// 注意：总结用的是编辑框里的当前文本，所以必须把 transcript 一起存回去，
   /// 否则库里会出现「旧原文 + 基于新原文的总结」这种对不上的数据。
@@ -109,7 +163,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     final currentTranscript = _transcriptController.text;
     setState(() => _summarizing = true);
     try {
-      final result = await _ai.summarize(currentTranscript);
+      final result = await _ai.summarize(
+        currentTranscript,
+        level: _level,
+        courseName: _note!.title,
+      );
       final summaryJson = result.encode();
       final updated = _note!.copyWith(
         summaryJson: summaryJson,
@@ -218,9 +276,13 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       floatingActionButton: _summarizing
           ? null
           : FloatingActionButton.extended(
-              onPressed: _generateSummary,
+              // 先选档位再生成：档位直接决定输出结构，让用户每次明确选择
+              onPressed: _pickLevelThenGenerate,
               icon: const Icon(Icons.auto_awesome),
-              label: Text(_detailMarkdown.isEmpty ? '一键总结' : '重新总结'),
+              label: Text(
+                '${_detailMarkdown.isEmpty ? '一键总结' : '重新总结'}'
+                '· ${_level.label}',
+              ),
             ),
       // 关键：总结期间不再把整个 IndexedStack 换成 spinner。
       // 那样会清掉 Tab1 的编辑内容、Tab2/3 的滚动位置，用户每次总结都丢一次上下文。

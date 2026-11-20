@@ -47,6 +47,56 @@ class AppConfig {
   // 注意：当前硅基流动接口并不接收 language 参数，这里仅保留给将来可能切换的厂商用。
   static const String speechLocale = 'zh_CN';
 
+  // ─────────────────────────────────────────────────────────
+  // 教材信息：用来自动识别课程，并把教材名带进术语生成/纠错提示词。
+  // 用户实际在用的三本（2026-11 确认）：
+  //   植物学（第三版）方炎明 主编，中国林业出版社
+  //   建筑制图（第四版），东南大学出版社
+  //   园林制图
+  // ─────────────────────────────────────────────────────────
+  static const List<({String course, String book, String publisher, String author})>
+      textbooks = [
+    (
+      course: '植物学',
+      book: '植物学（第三版）',
+      author: '方炎明 主编',
+      publisher: '中国林业出版社',
+    ),
+    (
+      course: '建筑制图',
+      book: '建筑制图（第四版）',
+      author: '',
+      publisher: '东南大学出版社',
+    ),
+    (
+      course: '园林制图',
+      book: '园林制图',
+      author: '',
+      publisher: '',
+    ),
+  ];
+
+  /// 按课程名匹配教材（模糊匹配，因为用户可能只写"植物学"或"植物"）
+  static ({String course, String book, String publisher, String author})?
+      textbookOf(String courseName) {
+    final q = courseName.trim();
+    if (q.isEmpty) return null;
+    for (final t in textbooks) {
+      if (q.contains(t.course) || t.course.contains(q)) return t;
+    }
+    return null;
+  }
+
+  /// 拼成一句可读的教材描述，给提示词用；匹配不到返回空串
+  static String textbookLine(String courseName) {
+    final t = textbookOf(courseName);
+    if (t == null) return '';
+    final parts = <String>[t.book];
+    if (t.author.isNotEmpty) parts.add(t.author);
+    if (t.publisher.isNotEmpty) parts.add(t.publisher);
+    return parts.join('，');
+  }
+
   // 数据库文件名
   static const String dbName = 'classnote.db';
 }
