@@ -260,6 +260,22 @@ void main() {
     });
   });
 
+  group('导图开关', () {
+    test('wantMindMap 默认开启', () {
+      const r = ClassroomRequest(courseName: 'x', chapter: 'y');
+      expect(r.wantMindMap, isTrue);
+    });
+
+    test('可以关掉', () {
+      const r = ClassroomRequest(
+        courseName: 'x',
+        chapter: 'y',
+        wantMindMap: false,
+      );
+      expect(r.wantMindMap, isFalse);
+    });
+  });
+
   group('结果对象', () {
     test('finalText 优先用纠错后的文本', () {
       const r = ClassroomResult(

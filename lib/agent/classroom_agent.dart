@@ -37,12 +37,17 @@ class ClassroomRequest {
   /// 已切好的音频片段路径（录音/切片不归 Agent 管）
   final List<String> audioChunks;
 
+  /// 是否要思维导图。关掉时提示词里明确不要求导图，
+  /// 避免"用户关了但还在花这次调用的钱"。
+  final bool wantMindMap;
+
   const ClassroomRequest({
     required this.courseName,
     required this.chapter,
     this.level = SummaryLevel.normal,
     this.existingTranscript,
     this.audioChunks = const [],
+    this.wantMindMap = true,
   });
 
   bool get hasTranscript =>
@@ -166,7 +171,7 @@ class ClassroomAgent {
     final ctx = _PipelineContext();
     final loop = AgentLoop(
       apiKey: apiKey,
-      tools: _buildTools(ctx),
+      tools: _buildTools(ctx, request),
       config: AgentConfig(
         systemPrompt: systemPrompt,
         maxSteps: maxSteps,
@@ -181,7 +186,8 @@ class ClassroomAgent {
       ..writeln('章节：${request.chapter}')
       ..writeln('详细度要求：${request.level.code}（${request.level.label}）')
       ..writeln('是否已有转写稿：${request.hasTranscript ? '是' : '否'}')
-      ..writeln('音频片段数：${request.audioChunks.length}');
+      ..writeln('音频片段数：${request.audioChunks.length}')
+      ..writeln('是否需要思维导图：${request.wantMindMap ? '需要' : '不需要（跳过 generate_mindmap）'}');
 
     if (request.hasAudio) {
       task
@@ -217,7 +223,7 @@ class ClassroomAgent {
     );
   }
 
-  ToolRegistry _buildTools(_PipelineContext ctx) {
+  ToolRegistry _buildTools(_PipelineContext ctx, ClassroomRequest request) {
     return ToolRegistry([
       // ─────────────── 转写 ───────────────
       AgentTool(
@@ -376,8 +382,10 @@ class ClassroomAgent {
           ctx.studySummary = result;
           ctx.summary = result.detailMarkdown;
           ctx.level = level;
-          // 总结也会产出导图结构，顺手存下来（不额外花钱）
-          if (result.graph.branches.isNotEmpty) {
+          // 总结的提示词本来就要求模型带一份 JSON 导图结构，
+          // 存下来不额外花钱。但用户明确不要导图时就不留，
+          // 否则「关掉开关」等于没关。
+          if (request.wantMindMap && result.graph.branches.isNotEmpty) {
             ctx.graph = result.graph;
           }
 

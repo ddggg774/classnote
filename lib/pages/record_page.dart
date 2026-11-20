@@ -14,9 +14,15 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:uuid/uuid.dart';
 
+import '../agent/classroom_agent.dart';
+import '../models/mind_graph.dart';
 import '../models/note.dart';
+import '../models/study_note.dart';
+import '../models/summary_level.dart';
 import '../services/cloud_asr_service.dart';
 import '../services/db_service.dart';
+import '../services/settings_service.dart';
+import '../widgets/agent_run_sheet.dart';
 
 class RecordPage extends StatefulWidget {
   const RecordPage({super.key, this.draftId});
@@ -36,6 +42,9 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
 
   /// 正在等待「停止 → 最后一段识别完成」的收尾过程
   bool _recognizing = false;
+
+  /// 「一键处理」正在跑（Agent 全流程）
+  bool _agentRunning = false;
 
   /// 草稿行 ID：录音一开始就落库，之后每完成一段就更新它，
   /// 这样崩溃/误退后还能从首页把内容找回来。
@@ -212,6 +221,245 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     } catch (e) {
       if (mounted) _showSnack('无法开始录音：$e');
     }
+  }
+
+  /// 一键处理：把这节课的文本交给顶层编排 Agent，自动完成
+  /// 「转写 → 纠错 → 总结 → 导图」，并把结果落库。
+  ///
+  /// 【为什么录音要先停】
+  /// Agent 拿到的必须是"已经定稿的文本"。录音还在跑时文本会继续增长，
+  /// 拿着半截文本去总结，用户看到的笔记会和最终转写对不上。
+  /// 所以这里先停录并等最后一段识别完，和 _finishAndSave 的处理一致。
+  Future<void> _runAgentPipeline() async {
+    if (_agentRunning) return;
+
+    // ① 先把录音收尾，确保文本定稿
+    if (_asr.isRecording) {
+      await _toggleRecord();
+      if (!mounted || _asr.isRecording) return;
+    }
+
+    final text = _transcriptController.text.trim();
+    if (text.isEmpty) {
+      _showSnack('还没有内容，先录一段或输入文字吧');
+      return;
+    }
+    if (text.length < 30) {
+      _showSnack('内容太短（${text.length} 字），至少 30 字再处理');
+      return;
+    }
+
+    // ② 取 API Key
+    final key = await SettingsService().getApiKey();
+    if (!mounted) return;
+    if (key.isEmpty) {
+      _showSnack('请先在「设置」里填写 DeepSeek API Key');
+      return;
+    }
+
+    // ③ 选档位
+    final options = await _pickAgentOptions();
+    if (options == null || !mounted) return;
+
+    // ④ 标题：没填就用「课程名 + 日期」，别让笔记叫「未命名课堂」
+    final title = _titleController.text.trim().isEmpty
+        ? '课堂 ${DateTime.now().month}月${DateTime.now().day}日'
+        : _titleController.text.trim();
+
+    setState(() => _agentRunning = true);
+    try {
+      final agent = ClassroomAgent(apiKey: key);
+      final result = await showModalBottomSheet<ClassroomResult>(
+        context: context,
+        isScrollControlled: true,
+        isDismissible: false,
+        enableDrag: false,
+        builder: (_) => AgentRunSheet(
+          agent: agent,
+          request: ClassroomRequest(
+            courseName: title,
+            chapter: '',
+            level: options.level,
+            existingTranscript: text,
+            wantMindMap: options.wantMindMap,
+            // 音频已在录音阶段转写完，这里不再传片段：
+            // Agent 的 transcribe 只处理"还没转写的音频"，
+            // 重复转写会白花钱。
+          ),
+        ),
+      );
+
+      if (!mounted) return;
+      if (result == null) {
+        _showSnack('已取消处理');
+        return;
+      }
+      await _saveAgentResult(result, title, text);
+    } catch (e) {
+      if (mounted) {
+        _showSnack('处理失败：${e.toString().replaceFirst('Exception: ', '')}');
+      }
+    } finally {
+      if (mounted) setState(() => _agentRunning = false);
+    }
+  }
+
+  /// 选档位与是否要导图
+  Future<QuickRunOptions?> _pickAgentOptions() async {
+    var level = SummaryLevel.normal;
+    var wantMindMap = true;
+
+    return showModalBottomSheet<QuickRunOptions>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Row(children: [
+                  Text('一键处理',
+                      style: TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold)),
+                ]),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text(
+                  'AI 会依次做：术语纠错 → 生成总结 → 生成思维导图',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+              ...SummaryLevel.values.map((lv) => ListTile(
+                    dense: true,
+                    leading: Icon(
+                      lv == level
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                      color: lv == level ? Colors.indigo : Colors.grey,
+                    ),
+                    title: Text(lv.label),
+                    subtitle: Text(lv.description,
+                        style: TextStyle(
+                            fontSize: 11.5, color: Colors.grey.shade600)),
+                    onTap: () => setSheet(() => level = lv),
+                  )),
+              SwitchListTile(
+                dense: true,
+                value: wantMindMap,
+                onChanged: (v) => setSheet(() => wantMindMap = v),
+                title: const Text('同时生成思维导图'),
+                subtitle: Text('关掉可省一次调用',
+                    style: TextStyle(
+                        fontSize: 11.5, color: Colors.grey.shade600)),
+              ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 46,
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.pop(
+                      ctx,
+                      QuickRunOptions(
+                          level: level, wantMindMap: wantMindMap),
+                    ),
+                    icon: const Icon(Icons.auto_awesome, size: 18),
+                    label: const Text('开始处理'),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 把 Agent 的产物落库（草稿转正 + 写总结 + 写术语待确认）
+  Future<void> _saveAgentResult(
+    ClassroomResult result,
+    String title,
+    String originalText,
+  ) async {
+    final finalText = result.finalText ?? originalText;
+    final summaryJson = _buildSummaryJson(result);
+
+    if (_draftId != null) {
+      final existing = await _db.queryById(_draftId!);
+      if (existing != null) {
+        await _db.update(existing.copyWith(
+          title: title,
+          transcript: finalText,
+          summaryJson: summaryJson,
+          duration: _asr.recordedSeconds,
+          status: Note.statusDone,
+        ));
+      }
+    } else {
+      await _db.insert(Note(
+        id: const Uuid().v4(),
+        title: title,
+        transcript: finalText,
+        summaryJson: summaryJson,
+        createdAt: DateTime.now(),
+        duration: _asr.recordedSeconds,
+        status: Note.statusDone,
+      ));
+    }
+
+    if (!mounted) return;
+    // 处理完直接退出记录页，回列表；用户点进去就能看新笔记
+    Navigator.of(context).pop();
+    _showSnack('已生成笔记：${result.summary?.length ?? 0} 字总结'
+        '${result.graph != null ? '、${result.graph!.totalNodes} 节点导图' : ''}');
+  }
+
+  /// 把 Agent 结果拼成 App 现有格式的 summaryJson。
+  /// 复用 StudySummary 的编码格式，保证详情页的解析逻辑不用改。
+  ///
+  /// 注意：legacy 的 MindMapData 由 graph 反推（详情页的「大纲」Tab 和
+  /// PNG 导出还在用它），不能随手塞空对象，否则那些功能会显示空白。
+  String? _buildSummaryJson(ClassroomResult result) {
+    final md = (result.summary ?? '').trim();
+    final graph = result.graph;
+    final hasGraph = graph != null && graph.branches.isNotEmpty;
+
+    if (md.isEmpty && !hasGraph) return null;
+
+    return StudySummary(
+      detailMarkdown: md,
+      // 有导图就反推一份两层结构给旧功能用；没有就留空
+      mindMap: hasGraph
+          ? _graphToLegacy(graph)
+          : MindMapData(root: '', nodes: const []),
+      graph: hasGraph
+          ? graph
+          : MindGraph.fromLegacyMindMap(
+              MindMapData(root: '', nodes: const []),
+            ),
+    ).encode();
+  }
+
+  /// 把 3-5 级 graph 压成两层 MindMapData（给旧的「大纲」Tab 与 PNG 导出）
+  MindMapData _graphToLegacy(MindGraph graph) {
+    final nodes = <MindNode>[];
+    for (final branch in graph.branches) {
+      final children = <String>[];
+      for (final child in branch.children) {
+        children.add(child.title);
+        // 再下一层的标题也带进来，避免大纲太单薄
+        for (final grand in child.children) {
+          children.add(grand.title);
+        }
+      }
+      nodes.add(MindNode(topic: branch.title, children: children));
+    }
+    return MindMapData(root: graph.root, nodes: nodes);
   }
 
   /// 完成并记录：先确保录音已收尾，再保存
@@ -467,18 +715,41 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 10),
 
+                    // 一键处理：交给 Agent 自动跑完纠错→总结→导图
                     SizedBox(
                       width: double.infinity,
                       height: 50,
+                      child: FilledButton.icon(
+                        onPressed: (_recognizing || _agentRunning ||
+                                (!recording &&
+                                    _transcriptController.text.trim().isEmpty))
+                            ? null
+                            : _runAgentPipeline,
+                        icon: _agentRunning
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Icon(Icons.auto_awesome),
+                        label: Text(_agentRunning ? 'AI 处理中…' : '一键处理'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 46,
                       child: OutlinedButton.icon(
                         // 录音中点击不置灰，而是先自动停止并转写完成再保存（见 _finishAndSave）
                         onPressed: _recognizing ||
+                                _agentRunning ||
                                 (!recording &&
                                     _transcriptController.text.trim().isEmpty)
                             ? null
                             : _finishAndSave,
                         icon: const Icon(Icons.check),
-                        label: const Text('完成并记录'),
+                        label: const Text('仅保存，稍后处理'),
                       ),
                     ),
                   ],
