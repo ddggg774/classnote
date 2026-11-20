@@ -48,7 +48,11 @@ class CorrectionAgent {
   /// 术语检索的数据源。默认走 TerminologyService（按课程+章节现生成），
   /// 也可以在构造时注入一个现成的术语包（测试/离线场景用）。
   final TerminologyPack? presetPack;
-  final TerminologyService _terminologyService = TerminologyService();
+
+  /// 术语生成服务。带上 apiKey，避免在没有 SharedPreferences 的环境
+  /// （命令行/测试）里读不到 Key 导致术语表检索整体失败。
+  late final TerminologyService _terminologyService =
+      TerminologyService(apiKeyOverride: apiKey);
 
   /// 术语表缓存仓库。传 null 表示不用缓存（测试场景）。
   final TerminologyStore? _store;

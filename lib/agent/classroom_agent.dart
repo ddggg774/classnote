@@ -2,61 +2,79 @@
 // 顶层编排 Agent：自己决定「转写 → 纠错 → 总结 → 导图」的调用顺序。
 //
 // 【为什么这一层值得 Agent 化】
-// 因为顺序不是固定的。举个真实场景：
-//   · 用户手上已经有转写稿（从别处粘贴来的）→ 不该再调 transcribe
+// 因为顺序不是固定的。真实场景里：
+//   · 用户手上已经有转写稿（从别处粘贴）→ 不该再调 transcribe
 //   · 转写只有几十字 → 不值得起纠错子 Agent，直接总结更划算
-//   · 用户只想要导图 → 不需要跑详细总结
+//   · 用户只想要导图 / 只想要速览总结 → 不需要跑全套
 //   · 纠错失败 → 应该带着未纠错的文本继续走，而不是整体失败
-// 这些判断用 if/else 写会变成一坨胶水代码，而且每加一种情况就要改一次。
-// 交给模型编排，它读工具描述自己决定。
+// 这些判断用 if/else 写会变成一坨胶水，每加一种情况改一次。
 //
-// 【骨架阶段的重要说明】
-// 本文件当前四个工具都还是「桩」：它们返回结构化的假数据，
-// 用来先验证 Agent 循环、日志、步数控制是否工作正常。
-// 第二步/第三步会把桩替换成真实实现（transcribe → CloudAsrService，
-// summarize → AiService，等等）。这样做的原因是不让业务逻辑和
-// Agent 机制在同一次改动里纠缠——先证明骨架对，再接真东西。
-import 'package:flutter/foundation.dart';
-
+// 【边界：Agent 只管文本处理流水线】
+// transcribe 接收的是**已经切好的音频片段路径**。录音、切片、中断恢复、
+// 前台服务这些仍归 RecordPage / CloudAsrService 管——那部分已经验证过，
+// 塞进 Agent 循环只会把稳定的东西拖进来一起冒险。
+// 同理，Agent 的产物是文本与结构，落库由调用方决定。
+import '../models/mind_graph.dart';
+import '../models/study_note.dart';
+import '../models/summary_level.dart';
+import '../services/ai_service.dart';
+import '../services/cloud_asr_service.dart';
 import 'agent_loop.dart';
 import 'agent_tool.dart';
+import 'correction_agent.dart';
 
 /// 用户对本次任务的要求
 class ClassroomRequest {
   final String courseName;
   final String chapter;
+
   /// 详细度：brief 速览 / normal 标准 / detail 详细
-  final String detailLevel;
+  final SummaryLevel level;
+
   /// 已有的转写稿；为空表示需要从音频转写
   final String? existingTranscript;
-  /// 音频文件路径；为空表示没有音频
-  final String? audioPath;
+
+  /// 已切好的音频片段路径（录音/切片不归 Agent 管）
+  final List<String> audioChunks;
 
   const ClassroomRequest({
     required this.courseName,
     required this.chapter,
-    this.detailLevel = 'normal',
+    this.level = SummaryLevel.normal,
     this.existingTranscript,
-    this.audioPath,
+    this.audioChunks = const [],
   });
 
   bool get hasTranscript =>
       existingTranscript != null && existingTranscript!.trim().isNotEmpty;
-  bool get hasAudio => audioPath != null && audioPath!.trim().isNotEmpty;
+  bool get hasAudio => audioChunks.isNotEmpty;
 }
 
-/// 编排产物
+/// 编排产物：把每个环节的真实结果都带出来
 class ClassroomResult {
   final String answer;
   final List<AgentStep> steps;
   final bool hitStepLimit;
   final bool failed;
 
-  /// 各环节产出（由工具回填）
+  /// 转写文本（合并所有片段后）
   final String? transcript;
+
+  /// 纠错后的文本
   final String? corrected;
+
+  /// 纠错报告的待确认项（给人回听用）
+  final List<String> pendingNotes;
+
+  /// 总结正文（Markdown）
   final String? summary;
-  final String? mindmap;
+
+  /// 总结档位
+  final SummaryLevel? level;
+
+  /// 详细导图
+  final MindGraph? graph;
+
 
   const ClassroomResult({
     required this.answer,
@@ -65,54 +83,77 @@ class ClassroomResult {
     this.failed = false,
     this.transcript,
     this.corrected,
+    this.pendingNotes = const [],
     this.summary,
-    this.mindmap,
+    this.level,
+    this.graph,
   });
 
   String get logText => steps.map((s) => s.line).join('\n');
+
+  /// 最终用于落库的文本：纠错过就用纠错的，否则用原始转写
+  String? get finalText => corrected ?? transcript;
+
+  /// 是否真的生成了总结。
+  /// 从 summary 推导而不是单独存一个 bool——那样构造时忘了传就是 false，
+  /// 属于"两个字段说同一件事"的经典隐患。
+  bool get hasSummary => (summary ?? '').trim().isNotEmpty;
 }
 
-/// 编排 Agent 运行期的上下文：工具之间靠它传递中间结果
+/// 编排过程中的共享状态：工具之间靠它传递中间结果
 class _PipelineContext {
   String? transcript;
   String? corrected;
+  final List<String> pendingNotes = [];
   String? summary;
-  String? mindmap;
+  SummaryLevel? level;
+  MindGraph? graph;
+  StudySummary? studySummary;
 }
 
 /// 顶层编排 Agent
 class ClassroomAgent {
   final String apiKey;
 
-  /// 纠错子 Agent 的入口（骨架阶段先留 hook，第二步接真实现）
-  final Future<String> Function(String transcript, String course, String chapter)?
-      correctionRunner;
+  /// 可注入的依赖。都给了默认实现，测试时可替换。
+  final CloudAsrService? asrService;
+  final AiService? aiService;
 
-  ClassroomAgent({required this.apiKey, this.correctionRunner});
+  /// 纠错子 Agent 的构造器（便于测试和复用术语缓存）
+  final CorrectionAgent Function(String apiKey)? correctionAgentFactory;
+
+  ClassroomAgent({
+    required this.apiKey,
+    this.asrService,
+    this.aiService,
+    this.correctionAgentFactory,
+  });
 
   static const String systemPrompt = '''
 你是课堂笔记的处理编排 Agent。你有一组工具，需要自己判断调用顺序。
 
 ## 可用工具
-- transcribe(audio_path)：把音频转成文字。仅当用户提供了音频、且没有现成转写稿时使用。
-- run_correction_agent(transcript, course, chapter)：调用纠错子 Agent 修正术语错误。
-  文本较长（超过约 200 字）或含专业术语时使用；文本很短时可直接跳过。
-- summarize(transcript, course, chapter, level)：生成总结。
-  level 可选 brief（速览）/ normal（标准）/ detail（详细）。
-- generate_mindmap(transcript, course, chapter)：生成思维导图。
+- transcribe(paths)：把**已切好的音频片段**转成文字并拼接。仅当用户给了音频、且没有现成转写稿时使用。
+- run_correction_agent(transcript, course, chapter)：调用纠错子 Agent 修正术语。
+  文本较长（超过约 200 字）或含专业术语时使用；很短或明显干净的文本可跳过。
+- summarize(text, course, chapter, level)：生成总结。level 必填：
+  brief（速览）/ normal（标准）/ detail（详细）。
+- generate_mindmap(text, course, chapter)：生成 3-5 级详细思维导图。
 
 ## 编排原则
 1. 先看用户给了什么：有转写稿就不必转写；只有音频就先转写。
-2. 顺序上，纠错要在总结之前——总结吃的应该是纠错后的文本。
-3. 不要重复调用同一个工具。同一个环节跑成功一次就够了。
-4. 某个工具失败时，判断能否带着已有结果继续：
+2. 纠错要在总结之前——总结吃的应该是纠错后的文本。
+3. 不要重复调用同一个工具。同一环节成功一次就够了。
+4. 某个工具失败时判断能否带着已有结果继续：
    比如纠错失败，可以拿未纠错的原文去做总结，并在最终回复里说明。
-5. 所有环节完成后，用一段话告诉用户：做了哪些步骤、每步结果如何、
+5. 总结与导图是两件独立的事：用户要详细笔记就出总结，
+   要结构图就出导图；需要两者就都做。
+6. 全部完成后，用一段话告诉用户：做了哪些步骤、每步结果如何、
    哪些地方需要人工确认。
 
 ## 铁律
 - 不要编造工具返回的内容。
-- 不要跳过 transcribe 就直接总结（没有文本时）。
+- 没有文本时不要凭空总结或画导图。
 - 到达步数上限仍未完成时，如实说明卡在哪一步。
 ''';
 
@@ -125,7 +166,7 @@ class ClassroomAgent {
     final ctx = _PipelineContext();
     final loop = AgentLoop(
       apiKey: apiKey,
-      tools: _buildTools(ctx, request),
+      tools: _buildTools(ctx),
       config: AgentConfig(
         systemPrompt: systemPrompt,
         maxSteps: maxSteps,
@@ -138,9 +179,16 @@ class ClassroomAgent {
     final task = StringBuffer()
       ..writeln('课程：${request.courseName}')
       ..writeln('章节：${request.chapter}')
-      ..writeln('详细度要求：${request.detailLevel}')
+      ..writeln('详细度要求：${request.level.code}（${request.level.label}）')
       ..writeln('是否已有转写稿：${request.hasTranscript ? '是' : '否'}')
-      ..writeln('是否提供音频：${request.hasAudio ? '是' : '否'}');
+      ..writeln('音频片段数：${request.audioChunks.length}');
+
+    if (request.hasAudio) {
+      task
+        ..writeln()
+        ..writeln('音频片段路径：')
+        ..writeln(request.audioChunks.map((p) => '- $p').join('\n'));
+    }
     if (request.hasTranscript) {
       final t = request.existingTranscript!;
       task
@@ -149,8 +197,9 @@ class ClassroomAgent {
         ..writeln('----- 转写稿 -----')
         ..write(t.length > 2000 ? '${t.substring(0, 2000)}…（后略）' : t);
     }
-    task.writeln();
-    task.writeln('请安排处理流程。');
+    task
+      ..writeln()
+      ..writeln('请安排处理流程。');
 
     final result = await loop.run(task.toString());
 
@@ -161,37 +210,80 @@ class ClassroomAgent {
       failed: result.failed,
       transcript: ctx.transcript,
       corrected: ctx.corrected,
-      summary: ctx.summary,
-      mindmap: ctx.mindmap,
+      pendingNotes: ctx.pendingNotes,
+      summary: ctx.studySummary?.detailMarkdown ?? ctx.summary,
+      level: ctx.level,
+      graph: ctx.graph,
     );
   }
 
-  ToolRegistry _buildTools(_PipelineContext ctx, ClassroomRequest request) {
+  ToolRegistry _buildTools(_PipelineContext ctx) {
     return ToolRegistry([
+      // ─────────────── 转写 ───────────────
       AgentTool(
         name: 'transcribe',
-        description: '把音频文件转写成文字。仅在用户提供了音频且没有现成转写稿时调用。',
+        description: '把已切好的音频片段逐个转写成文字并按顺序拼接。'
+            '仅在用户提供了音频、且没有现成转写稿时调用。'
+            '注意：只接受已经切好的片段路径，不要传整段长录音。',
         parameters: Schema.object(
           properties: {
-            'audio_path': Schema.string('音频文件路径'),
+            'paths': Schema.stringArray('已切好的音频片段文件路径，按时间顺序'),
           },
-          required: ['audio_path'],
+          required: ['paths'],
         ),
         execute: (args) async {
-          final path = (args['audio_path'] ?? '').toString().trim();
-          if (path.isEmpty) {
-            return ToolResult.error('audio_path 不能为空');
+          final raw = (args['paths'] as List?) ?? [];
+          final paths = raw
+              .map((e) => e.toString().trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
+          if (paths.isEmpty) {
+            return ToolResult.error('paths 为空，没有可转写的音频片段');
           }
-          // TODO(第三步): 接 CloudAsrService.recognize(path)
-          debugPrint('[agent] transcribe 桩调用: $path');
-          final fake = '（骨架阶段占位：这里将返回 $path 的转写文本）';
-          ctx.transcript = fake;
-          return ToolResult.ok('转写完成，共 ${fake.length} 字。\n$fake');
+
+          final asr = asrService ?? CloudAsrService();
+          final parts = <String>[];
+          final failures = <String>[];
+
+          for (var i = 0; i < paths.length; i++) {
+            try {
+              final text = await asr.recognize(paths[i]);
+              parts.add(text);
+            } catch (e) {
+              // 单段失败不中断整体：记下来，最后一起报
+              failures.add('第 ${i + 1} 段：${e.toString().replaceFirst('Exception: ', '')}');
+            }
+          }
+
+          if (parts.isEmpty) {
+            return ToolResult.error(
+              '所有音频片段都转写失败：\n${failures.join('\n')}',
+            );
+          }
+
+          final merged = parts.join('\n');
+          ctx.transcript = merged;
+
+          final b = StringBuffer()
+            ..writeln('转写完成：${parts.length}/${paths.length} 段成功，'
+                '共 ${merged.length} 字。');
+          if (failures.isNotEmpty) {
+            b.writeln('失败片段：');
+            for (final f in failures) {
+              b.writeln('- $f');
+            }
+            b.writeln('后续处理只基于成功的部分，缺失片段请在最终回复里说明。');
+          }
+          return ToolResult.ok(b.toString());
         },
       ),
+
+      // ─────────────── 纠错子 Agent ───────────────
       AgentTool(
         name: 'run_correction_agent',
-        description: '调用纠错子 Agent 修正术语错误。文本较长或含专业术语时使用。',
+        description: '调用纠错子 Agent 修正术语错误（同音字、术语误听）。'
+            '会先查本节课术语表，再按 A/B/C 三档处理：高置信直接改、'
+            '低置信标待确认、缺失处标缺口，绝不编造。',
         parameters: Schema.object(
           properties: {
             'transcript': Schema.string('待纠错的转写文本'),
@@ -207,20 +299,48 @@ class ClassroomAgent {
           if (text.trim().isEmpty) {
             return ToolResult.error('transcript 为空，无法纠错');
           }
-          // 接纠错子 Agent；没注入就走降级（原样返回）
-          final corrected = correctionRunner == null
-              ? text
-              : await correctionRunner!(text, course, chapter);
-          ctx.corrected = corrected;
-          return ToolResult.ok('纠错完成，输出 ${corrected.length} 字。');
+
+          final agent = (correctionAgentFactory ?? _defaultCorrector)(apiKey);
+          final result = await agent.run(
+            text,
+            course: course,
+            chapter: chapter,
+          );
+
+          // 纠错的正文改动体现在 summary 里（含 〔改：原→正〕 标注），
+          // 但为了能继续往下走，我们要把"可用于总结的文本"确定下来。
+          // 策略：纠错 Agent 不改动原文的正文（它输出的是报告），
+          // 所以这里用原文作为 corrected 基底，把待确认项透传给调用方。
+          ctx.corrected = text;
+          for (final p in result.pending) {
+            ctx.pendingNotes.add(
+              '${p.snippet}'
+              '${p.candidates.isEmpty ? '' : ' 〔疑似：${p.candidates.join(' / ')}〕'}',
+            );
+          }
+          for (final m in result.missing) {
+            ctx.pendingNotes.add('〔缺失〕$m');
+          }
+
+          final b = StringBuffer()..writeln('纠错完成。');
+          b.writeln(result.summary);
+          if (result.pending.isNotEmpty) {
+            b.writeln();
+            b.writeln('待确认 ${result.pending.length} 处，已记录供人工回听。');
+          }
+          return ToolResult.ok(b.toString());
         },
       ),
+
+      // ─────────────── 总结 ───────────────
       AgentTool(
         name: 'summarize',
-        description: '生成课堂总结。level 选 brief/normal/detail。',
+        description: '生成课堂总结。level 必填：'
+            'brief（速览，只有知识点与考试提示）/ '
+            'normal（标准九段式）/ detail（九段式+原文引用）。',
         parameters: Schema.object(
           properties: {
-            'transcript': Schema.string('用于总结的文本（应为纠错后的文本）'),
+            'text': Schema.string('用于总结的文本（应为纠错后的文本）'),
             'course': Schema.string('课程名'),
             'chapter': Schema.string('章节名'),
             'level': {
@@ -229,44 +349,102 @@ class ClassroomAgent {
               'description': '总结详细度',
             },
           },
-          required: ['transcript', 'course', 'chapter', 'level'],
+          required: ['text', 'course', 'chapter', 'level'],
         ),
         execute: (args) async {
-          final text = (args['transcript'] ?? '').toString();
-          final level = (args['level'] ?? 'normal').toString();
+          final text = (args['text'] ?? '').toString();
+          final course = (args['course'] ?? '').toString();
+          final level = parseLevel(args['level']?.toString());
           if (text.trim().isEmpty) {
             return ToolResult.error('没有可总结的文本');
           }
-          // TODO(第三步): 接 AiService.summarize + 分档
-          debugPrint('[agent] summarize 桩调用: level=$level, ${text.length} 字');
-          final fake = '（骨架阶段占位：$level 档总结）';
-          ctx.summary = fake;
-          return ToolResult.ok('总结完成（$level 档）。\n$fake');
+
+          final ai = aiService ?? AiService(apiKeyOverride: apiKey);
+          final StudySummary result;
+          try {
+            result = await ai.summarize(
+              text,
+              level: level,
+              courseName: course,
+            );
+          } catch (e) {
+            return ToolResult.error(
+              '总结失败：${e.toString().replaceFirst('Exception: ', '')}',
+            );
+          }
+
+          ctx.studySummary = result;
+          ctx.summary = result.detailMarkdown;
+          ctx.level = level;
+          // 总结也会产出导图结构，顺手存下来（不额外花钱）
+          if (result.graph.branches.isNotEmpty) {
+            ctx.graph = result.graph;
+          }
+
+          return ToolResult.ok(
+            '总结完成（${level.label} 档，${result.detailMarkdown.length} 字）。'
+            '${result.chunked ? '课堂较长，已分块整理后合并。' : ''}',
+          );
         },
       ),
+
+      // ─────────────── 思维导图 ───────────────
       AgentTool(
         name: 'generate_mindmap',
-        description: '根据文本生成思维导图（主图 + 子图，3-5 级）。',
+        description: '生成 3-5 级详细思维导图（主图 + 子图，带关系标注与来源回溯）。',
         parameters: Schema.object(
           properties: {
-            'transcript': Schema.string('用于生成导图的文本'),
+            'text': Schema.string('用于生成导图的文本'),
             'course': Schema.string('课程名'),
             'chapter': Schema.string('章节名'),
           },
-          required: ['transcript', 'course', 'chapter'],
+          required: ['text', 'course', 'chapter'],
         ),
         execute: (args) async {
-          final text = (args['transcript'] ?? '').toString();
+          final text = (args['text'] ?? '').toString();
+          final course = (args['course'] ?? '').toString();
           if (text.trim().isEmpty) {
             return ToolResult.error('没有可用于生成导图的文本');
           }
-          // TODO(第三步): 接 AiService 产出的 MindGraph
-          debugPrint('[agent] generate_mindmap 桩调用: ${text.length} 字');
-          const fake = '（骨架阶段占位：思维导图）';
-          ctx.mindmap = fake;
-          return ToolResult.ok('导图生成完成。\n$fake');
+
+          // 如果已经跑过总结，直接用总结产出的导图，省一次调用
+          final existing = ctx.graph;
+          if (existing != null && existing.branches.isNotEmpty) {
+            return ToolResult.ok(
+              '复用总结已生成的导图：${existing.branches.length} 个分支，'
+              '${existing.totalNodes} 个节点，最深 ${existing.maxDepth} 级。',
+            );
+          }
+
+          final ai = aiService ?? AiService(apiKeyOverride: apiKey);
+          try {
+            final result = await ai.summarize(
+              text,
+              level: SummaryLevel.normal,
+              courseName: course,
+            );
+            if (result.graph.branches.isEmpty) {
+              return ToolResult.error('模型没有返回可用的导图结构');
+            }
+            ctx.graph = result.graph;
+            // 顺手把总结也存下（如果还没有）
+            ctx.studySummary ??= result;
+            ctx.summary ??= result.detailMarkdown;
+            return ToolResult.ok(
+              '导图生成完成：${result.graph.branches.length} 个分支，'
+              '${result.graph.totalNodes} 个节点，最深 ${result.graph.maxDepth} 级。',
+            );
+          } catch (e) {
+            return ToolResult.error(
+              '导图生成失败：${e.toString().replaceFirst('Exception: ', '')}',
+            );
+          }
         },
       ),
     ]);
   }
+
+  /// 默认的纠错 Agent 构造（带术语缓存）
+  static CorrectionAgent _defaultCorrector(String key) =>
+      CorrectionAgent(apiKey: key);
 }

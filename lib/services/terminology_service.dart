@@ -24,6 +24,13 @@ import 'settings_service.dart';
 class TerminologyService {
   final SettingsService _settings = SettingsService();
 
+  /// 直接注入的 API Key。传了就优先用它，跳过 SharedPreferences。
+  /// 用途：命令行/测试环境没有 App 的 SharedPreferences，但术语生成是
+  /// 纠错子 Agent 的必要前置，不能因为读不到 Key 就整体降级。
+  final String? apiKeyOverride;
+
+  TerminologyService({this.apiKeyOverride});
+
   static const String _systemPrompt = '''
 你是课堂录音转写的术语准备助手。根据用户给出的课程信息，产出一份用于
 「纠错与质量校准」的术语清单。你的输出会被程序直接解析，所以必须严格是 JSON。
@@ -76,7 +83,7 @@ class TerminologyService {
     String material = '',
     String knownTerms = '',
   }) async {
-    final apiKey = await _settings.getApiKey();
+    final apiKey = apiKeyOverride ?? await _settings.getApiKey();
     if (apiKey.isEmpty) {
       throw Exception('请先在「设置」里填写 DeepSeek API Key');
     }
