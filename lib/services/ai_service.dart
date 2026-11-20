@@ -17,6 +17,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../config.dart';
+import '../models/mind_graph.dart';
 import '../models/note.dart';
 import '../models/study_note.dart';
 import 'settings_service.dart';
@@ -115,11 +116,36 @@ class AiService {
 关键知识点、例题、作业考试提示的时间点或原文片段索引。
 
 ## 额外要求
-在 Markdown 正文的**最末尾**，附一个 JSON 代码块供思维导图使用（同样不许编造）：
+在 Markdown 正文的**最末尾**，附一个 JSON 代码块，内容是一棵**详细思维导图**（同样不许编造）。
+这份导图会被渲染成树形浏览 + 导出到 XMind，所以结构必须规范：
+
 ```json
-{"root":"本课主题(不超过12字)","nodes":[{"topic":"要点(不超过15字)","children":["子点"]}]}
+{"root":"课程主题","branches":[
+ {"id":"b0","title":"课程信息","mark":"none","children":[
+   {"id":"b0-1","title":"具体节点名","relation":"包含","details":["说明1","说明2"],"source":"12:30「原文片段」","mark":"key","children":[]}
+ ]}
+]}
 ```
-nodes 数量按课堂长度自适应：短课 4~6 个，长课覆盖全部主要章节。
+
+导图硬性要求：
+1. **一级分支固定这 11 个，顺序不变**：课程信息、学习目标、知识点结构、公式/定理、
+   例题与解题步骤、易错点、老师强调、考试/作业提示、课堂问答、术语表、待确认清单。
+   某个分支原文里没有内容，就把该分支写成 `{"title":"该分支名","children":[{"id":"x","title":"未提及"}]}`，
+   **不要省略这个分支**。
+2. **层级 3~5 级**：一级分支 → 二级（知识点/例题/公式名）→ 三级（概念/适用条件/步骤）→ 四~五级（细节）。
+   节点标题必须具体（写"洛必达法则的适用条件"而不是"重点"；写"例3：求 lim(x→0) sin x/x"而不是"例题1"）。
+3. **节点内容按类型展开**（放在 details 数组里，每条一句、简短）：
+   - 概念节点：定义 + 成立条件
+   - 公式节点：公式原文 + 各变量含义 + 适用条件
+   - 例题节点：题干摘要 + 思路 + 关键步骤 + 答案 + 易错点（步骤缺失写"〔转写缺失〕"）
+   - 作业节点：要求 + 截止时间 + 提交方式（没有就写"未提及"）
+4. **relation 字段**标注与父节点的关系，从这些里选：前提、推导、因果、对比、包含、易错、考试相关。
+   说不清就省略该字段，不要乱填。
+5. **source 字段**：关键知识点、公式、例题、考试作业提示节点，尽量给时间戳或「原文片段」。
+   转写听不清的，写"待确认"并把 mark 设为 "unconfirmed"。
+6. **mark 字段**（视觉编码）只能是这几个值之一：`key`(★重点) `hard`(▲难点)
+   `pitfall`(⚠易错) `exam`(◆考点) `unconfirmed`(❓待确认) `quote`(「」老师原话) `none`。
+7. details 是 **字符串数组**，不是对象；children 是 **节点数组**，没有子节点就给 `[]` 或省略。
 ''';
 
   /// 超长课堂的「分块整理」提示词：只整理结构，不做最终排版
@@ -172,10 +198,21 @@ nodes 数量按课堂长度自适应：短课 4~6 个，长课覆盖全部主要
 - 疑问清单：- 位置/原文片段：原因 → `待确认`
 - 时间戳回溯：关键内容的时间点或原文片段索引
 
-最后附 JSON 代码块供思维导图：
+最后附 JSON 代码块，是一棵详细思维导图（结构要求与正文一致）：
+
 ```json
-{"root":"本课主题","nodes":[{"topic":"要点","children":["子点"]}]}
+{"root":"课程主题","branches":[
+ {"id":"b0","title":"课程信息","children":[
+   {"id":"b0-1","title":"具体节点名","relation":"包含","details":["说明"],"source":"12:30「原文」","mark":"key","children":[]}
+ ]}
+]}
 ```
+
+一级分支固定 11 个且顺序不变：课程信息、学习目标、知识点结构、公式/定理、
+例题与解题步骤、易错点、老师强调、考试/作业提示、课堂问答、术语表、待确认清单；
+没有内容的分支也必须保留，内部写一个 title 为"未提及"的节点。
+层级 3~5 级，节点标题要具体，relation 从「前提/推导/因果/对比/包含/易错/考试相关」里选，
+mark 只能是 key/hard/pitfall/exam/unconfirmed/quote/none。
 ''';
 
   // ───────────────────────── 对外入口 ─────────────────────────
@@ -227,6 +264,7 @@ nodes 数量按课堂长度自适应：短课 4~6 个，长课覆盖全部主要
   // ───────────────────────── 内部实现 ─────────────────────────
 
   /// 从模型输出里拆出「Markdown 正文」和「JSON 代码块」。
+  /// JSON 里是一棵 3–5 级详细导图；同时从它推导出旧的两层 mindMap 以保持兼容。
   /// 解析不出 JSON 时退化为：只用 Markdown，导图用空壳（页面会提示重新生成）。
   StudySummary _parseSummary(String raw, {required bool chunked}) {
     var content = raw.trim();
@@ -242,13 +280,13 @@ nodes 数量按课堂长度自适应：短课 4~6 个，长课覆盖全部主要
     }
 
     // 从末尾找 json 代码块
-    MindMapData? mindMap;
+    MindGraph? graph;
     final jsonBlock = _extractTrailingJsonBlock(content);
     if (jsonBlock != null) {
       try {
         final decoded = jsonDecode(jsonBlock.json);
         if (decoded is Map<String, dynamic>) {
-          mindMap = MindMapData.fromJson(decoded);
+          graph = MindGraph.fromJson(decoded);
           content = jsonBlock.remainder;
         }
       } catch (_) {
@@ -262,31 +300,52 @@ nodes 数量按课堂长度自适应：短课 4~6 个，长课覆盖全部主要
       content = content.substring(0, content.length - 3).trimRight();
     }
 
-    // 退一步：整篇就是纯 JSON（旧版行为）
-    if (mindMap == null && content.trim().startsWith('{')) {
+    // 退一步：整篇就是纯 JSON（旧版行为 / 模型没写正文）
+    if (graph == null && content.trim().startsWith('{')) {
       try {
         final decoded = jsonDecode(content.trim());
         if (decoded is Map<String, dynamic>) {
-          mindMap = MindMapData.fromJson(decoded);
+          graph = MindGraph.fromJson(decoded);
           return StudySummary(
             detailMarkdown: '',
-            mindMap: mindMap,
+            mindMap: _graphToLegacyMindMap(graph),
+            graph: graph,
             chunked: chunked,
           );
         }
       } catch (_) {}
     }
 
-    mindMap ??= MindMapData(root: '本课总结', nodes: const []);
-
     if (content.trim().isEmpty) {
       throw AiException('AI 没有返回笔记正文，请再点一次「重新总结」');
     }
 
+    graph ??= const MindGraph(root: '本课思维导图', branches: []);
     return StudySummary(
       detailMarkdown: content.trim(),
-      mindMap: mindMap,
+      mindMap: _graphToLegacyMindMap(graph),
+      graph: graph,
       chunked: chunked,
+    );
+  }
+
+  /// 把详细导图压成旧的两层 MindMap。
+  /// 为什么要这一步：详情页的「大纲」Tab 和 PNG 导出仍在用 MindMapData，
+  /// 由 graph 反推可以保证两者内容一致，不必让模型输出两份。
+  MindMapData _graphToLegacyMindMap(MindGraph graph) {
+    return MindMapData(
+      root: graph.root,
+      nodes: graph.branches.map((b) {
+        // 二级节点作为旧结构的 children，details 也并进去，避免信息丢失
+        final children = <String>[];
+        for (final d in b.details) {
+          children.add(d);
+        }
+        for (final c in b.children) {
+          children.add(c.title);
+        }
+        return MindNode(topic: b.title, children: children);
+      }).toList(),
     );
   }
 

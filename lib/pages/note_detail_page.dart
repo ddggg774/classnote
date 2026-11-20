@@ -9,10 +9,13 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../models/mind_graph.dart';
 import '../models/note.dart';
 import '../models/study_note.dart';
 import '../services/db_service.dart';
 import '../services/ai_service.dart';
+import '../services/mind_graph_exporter.dart';
+import '../widgets/mind_graph_tree.dart';
 import '../widgets/mind_map_widget.dart';
 
 class NoteDetailPage extends StatefulWidget {
@@ -34,6 +37,10 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   final ScrollController _detailScroll = ScrollController();
   Note? _note;
   MindMapData? _mindMap;
+  /// 3–5 级详细导图（主图+子图）
+  MindGraph? _graph;
+  /// 当前进入的二级分支；null 表示显示主图
+  MindGraphNode? _activeBranch;
   /// 详细课堂笔记正文（九段式 Markdown）。为空表示还没有生成过详细笔记（老数据）。
   String _detailMarkdown = '';
   bool _summarizing = false;
@@ -70,6 +77,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     setState(() {
       _note = note;
       _mindMap = parsed?.mindMap;
+      _graph = parsed?.graph;
+      _activeBranch = null;
       _detailMarkdown = parsed?.detailMarkdown ?? '';
     });
   }
@@ -94,6 +103,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       setState(() {
         _note = updated;
         _mindMap = result.mindMap;
+        _graph = result.graph;
+        _activeBranch = null;
         _detailMarkdown = result.detailMarkdown;
         _tabIndex = 1; // 跳到「详细笔记」，这是用户真正想看的东西
       });
@@ -105,37 +116,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _showSnack(e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) setState(() => _summarizing = false);
-    }
-  }
-
-  /// 导出思维导图为 PNG 图片，并通过系统分享面板保存/发送
-  Future<void> _exportMindMap() async {
-    if (_mindMap == null || _exporting) return;
-    // 提前取好分享面板的弹出位置：后面有 await，之后再读 context 会踩
-    // use_build_context_synchronously，而且在页面已销毁时会拿到无效对象。
-    final box = context.findRenderObject() as RenderBox?;
-    final origin =
-        box == null ? null : box.localToGlobal(Offset.zero) & box.size;
-    setState(() => _exporting = true);
-    try {
-      final bytes = await MindMapWidget.exportPng(_captureKey);
-      final dir = await getTemporaryDirectory();
-      final safeTitle = _note!.title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
-      final file = File('${dir.path}/导图_$safeTitle.png');
-      await file.writeAsBytes(bytes);
-
-      // iPad 上分享面板必须给出弹出位置，否则 share_plus 会抛异常
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path)],
-          text: '「${_note!.title}」思维导图',
-          sharePositionOrigin: origin,
-        ),
-      );
-    } catch (e) {
-      _showSnack('导出失败：${e.toString().replaceFirst('Exception: ', '')}');
-    } finally {
-      if (mounted) setState(() => _exporting = false);
     }
   }
 
@@ -245,6 +225,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                     ],
                   ),
                 ),
+                // PNG 导出需要 MindMapWidget 真实渲染，挂在这里的 Offstage 里
+                _buildPngCaptureSource(),
               ],
             ),
     );
@@ -401,32 +383,219 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     }
   }
 
-  /// Tab 3：思维导图
+  /// Tab 3：思维导图（主图 + 子图）
+  ///
+  /// 交互：默认显示「主图」——课程主题 + 11 个一级分支；
+  /// 点某个分支进入「子图」——该分支下 3–5 级的完整层级（可折叠）。
+  /// 这样主图永远不拥挤，详细内容都在子图里。
   Widget _buildMindMapTab() {
-    if (_mindMap == null) return _buildEmptyHint('还没有思维导图，点右下角「一键总结」生成');
+    if (_graph == null || _graph!.branches.isEmpty) {
+      return _buildEmptyHint('还没有思维导图，点右下角「一键总结」生成');
+    }
+    final graph = _graph!;
+    final branch = _activeBranch;
+
     return Column(
       children: [
+        // 子图时显示返回条
+        if (branch != null)
+          Container(
+            width: double.infinity,
+            color: Colors.indigo.shade50,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              children: [
+                TextButton.icon(
+                  onPressed: () => setState(() => _activeBranch = null),
+                  icon: const Icon(Icons.arrow_back, size: 16),
+                  label: const Text('返回主图', style: TextStyle(fontSize: 12.5)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 32),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    branch.title,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.indigo.shade900,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         Expanded(
-          child: MindMapWidget(data: _mindMap!, captureKey: _captureKey),
+          child: branch == null
+              ? MindGraphOverview(
+                  graph: graph,
+                  onBranchTap: (b) => setState(() => _activeBranch = b),
+                )
+              : MindGraphSubtree(branch: branch),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-          child: SizedBox(
-            width: double.infinity,
-            height: 46,
-            child: OutlinedButton.icon(
-              onPressed: _exporting ? null : _exportMindMap,
-              icon: _exporting
-                  ? const SizedBox(
-                      width: 18, height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.ios_share),
-              label: const Text('导出图片'),
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _exporting ? null : _showExportSheet,
+                  icon: _exporting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.ios_share, size: 18),
+                  label: const Text('导出导图'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _exporting ? null : _exportMindMapPng,
+                  icon: const Icon(Icons.image_outlined, size: 18),
+                  label: const Text('导出图片'),
+                ),
+              ),
+            ],
           ),
         ),
       ],
+    );
+  }
+
+  /// 选择导出格式（Markdown / Markmap / Mermaid / OPML / JSON）
+  Future<void> _showExportSheet() async {
+    final graph = _graph;
+    if (graph == null) return;
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  const Text('导出思维导图',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  Text('${graph.totalNodes} 节点 / ${graph.maxDepth} 级',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.grey.shade600)),
+                ],
+              ),
+            ),
+            ...MindGraphExporter.formats.map((f) => ListTile(
+                  dense: true,
+                  leading: Icon(_iconForFormat(f.key), size: 20),
+                  title: Text(f.label, style: const TextStyle(fontSize: 14)),
+                  subtitle: Text('.${f.ext}',
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.grey.shade500)),
+                  onTap: () => Navigator.pop(ctx, f.key),
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await _exportGraph(chosen);
+  }
+
+  static IconData _iconForFormat(String key) {
+    switch (key) {
+      case 'md':
+        return Icons.article_outlined;
+      case 'markmap':
+        return Icons.language;
+      case 'mermaid':
+        return Icons.account_tree_outlined;
+      case 'opml':
+        return Icons.list_alt;
+      case 'json':
+        return Icons.data_object;
+      default:
+        return Icons.description_outlined;
+    }
+  }
+
+  /// 把导图按指定格式落盘并调起系统分享
+  Future<void> _exportGraph(String formatKey) async {
+    final graph = _graph;
+    if (graph == null || _exporting) return;
+    final box = context.findRenderObject() as RenderBox?;
+    final origin =
+        box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+    setState(() => _exporting = true);
+    try {
+      final text = MindGraphExporter.render(graph, formatKey);
+      final ext = MindGraphExporter.extOf(formatKey);
+      final dir = await getTemporaryDirectory();
+      final safeTitle =
+          _note!.title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
+      final file = File('${dir.path}/思维导图_$safeTitle.$ext');
+      await file.writeAsString(text);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: '「${_note!.title}」思维导图',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (e) {
+      _showSnack('导出失败：${e.toString().replaceFirst('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  /// 导出 PNG（用旧的 MindMapWidget 截长图，保留给需要图片的场景）
+  Future<void> _exportMindMapPng() async {
+    if (_mindMap == null || _exporting) return;
+    final box = context.findRenderObject() as RenderBox?;
+    final origin =
+        box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+    setState(() => _exporting = true);
+    try {
+      final bytes = await MindMapWidget.exportPng(_captureKey);
+      final dir = await getTemporaryDirectory();
+      final safeTitle =
+          _note!.title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
+      final file = File('${dir.path}/导图_$safeTitle.png');
+      await file.writeAsBytes(bytes);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: '「${_note!.title}」思维导图',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (e) {
+      _showSnack('导出失败：${e.toString().replaceFirst('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  /// 隐藏的截图源：PNG 导出需要 MindMapWidget 真实渲染在树上，
+  /// 放在 Offstage 里既不影响布局又保证 RepaintBoundary 可截图。
+  Widget _buildPngCaptureSource() {
+    if (_mindMap == null) return const SizedBox.shrink();
+    return Offstage(
+      offstage: true,
+      child: SizedBox(
+        width: 420,
+        child: MindMapWidget(data: _mindMap!, captureKey: _captureKey),
+      ),
     );
   }
 
