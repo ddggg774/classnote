@@ -1,14 +1,16 @@
 // lib/pages/note_detail_page.dart
-// 笔记详情页：三个 Tab —— 原文（可编辑）、AI 总结、思维导图。
-// "生成总结"按钮调用 AI 服务，把结果存回数据库并渲染导图。
-import 'dart:convert';
+// 笔记详情页：四个 Tab —— 原文（可编辑）、详细笔记（九段式 Markdown）、
+// 思维导图、大纲（结构化的要点列表）。
+// "生成总结"按钮调用 AI 服务，一次产出「详细笔记 + 思维导图结构」，存回数据库后分别渲染。
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/note.dart';
+import '../models/study_note.dart';
 import '../services/db_service.dart';
 import '../services/ai_service.dart';
 import '../widgets/mind_map_widget.dart';
@@ -29,8 +31,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
   late TabController _tabController;
   final GlobalKey _captureKey = GlobalKey();
+  final ScrollController _detailScroll = ScrollController();
   Note? _note;
   MindMapData? _mindMap;
+  /// 详细课堂笔记正文（九段式 Markdown）。为空表示还没有生成过详细笔记（老数据）。
+  String _detailMarkdown = '';
   bool _summarizing = false;
   bool _exporting = false;
   bool _notFound = false;
@@ -39,7 +44,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    // 4 个 Tab：原文 / 详细笔记 / 思维导图 / 大纲
+    _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging && mounted) {
         setState(() => _tabIndex = _tabController.index);
@@ -58,22 +64,17 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       return;
     }
     _transcriptController.text = note.transcript;
-    MindMapData? parsed;
-    if (note.hasSummary) {
-      try {
-        parsed = MindMapData.fromJson(jsonDecode(note.summaryJson!));
-      } catch (_) {
-        // 总结 JSON 损坏（版本升级/写入中断）时降级为「无总结」，不影响看原文
-        parsed = null;
-      }
-    }
+    // StudySummary.tryDecode 兼容三种历史形态：
+    // ① 新格式（带 detail）；② 旧格式（只有 mindMap）；③ 坏数据（返回 null）
+    final parsed = StudySummary.tryDecode(note.summaryJson);
     setState(() {
       _note = note;
-      _mindMap = parsed;
+      _mindMap = parsed?.mindMap;
+      _detailMarkdown = parsed?.detailMarkdown ?? '';
     });
   }
 
-  /// 调用 AI 生成总结（同时生成思维导图），结果写回数据库。
+  /// 调用 AI 生成详细笔记（同时生成思维导图），结果写回数据库。
   /// 注意：总结用的是编辑框里的当前文本，所以必须把 transcript 一起存回去，
   /// 否则库里会出现「旧原文 + 基于新原文的总结」这种对不上的数据。
   Future<void> _generateSummary() async {
@@ -81,8 +82,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     final currentTranscript = _transcriptController.text;
     setState(() => _summarizing = true);
     try {
-      final data = await _ai.summarize(currentTranscript);
-      final summaryJson = jsonEncode(data.toJson());
+      final result = await _ai.summarize(currentTranscript);
+      final summaryJson = result.encode();
       final updated = _note!.copyWith(
         summaryJson: summaryJson,
         transcript: currentTranscript,
@@ -92,10 +93,14 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       if (!mounted) return;
       setState(() {
         _note = updated;
-        _mindMap = data;
-        _tabIndex = 2; // 跳到思维导图 Tab
+        _mindMap = result.mindMap;
+        _detailMarkdown = result.detailMarkdown;
+        _tabIndex = 1; // 跳到「详细笔记」，这是用户真正想看的东西
       });
-      _tabController.animateTo(2);
+      _tabController.animateTo(1);
+      if (result.chunked) {
+        _showSnack('课堂较长，已分块整理后再合并成完整笔记');
+      }
     } catch (e) {
       _showSnack(e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -191,10 +196,13 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         title: Text(note?.title ?? '笔记详情'),
         bottom: TabBar(
           controller: _tabController,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
           tabs: const [
             Tab(text: '原文'),
-            Tab(text: '总结'),
+            Tab(text: '详细笔记'),
             Tab(text: '思维导图'),
+            Tab(text: '大纲'),
           ],
         ),
       ),
@@ -203,7 +211,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           : FloatingActionButton.extended(
               onPressed: _generateSummary,
               icon: const Icon(Icons.auto_awesome),
-              label: Text(_mindMap == null ? '一键总结' : '重新总结'),
+              label: Text(_detailMarkdown.isEmpty ? '一键总结' : '重新总结'),
             ),
       // 关键：总结期间不再把整个 IndexedStack 换成 spinner。
       // 那样会清掉 Tab1 的编辑内容、Tab2/3 的滚动位置，用户每次总结都丢一次上下文。
@@ -231,8 +239,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                     index: _tabIndex,
                     children: [
                       _buildTranscriptTab(),
-                      _buildSummaryTab(),
+                      _buildDetailTab(),
                       _buildMindMapTab(),
+                      _buildSummaryTab(),
                     ],
                   ),
                 ),
@@ -310,6 +319,86 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         }),
       ],
     );
+  }
+
+  /// Tab 2：详细笔记（九段式 Markdown，可复制/导出）
+  Widget _buildDetailTab() {
+    if (_detailMarkdown.isEmpty) {
+      return _buildEmptyHint('还没有详细笔记，点右下角「一键总结」生成\n'
+          '（会整理成知识点、例题、作业提示等九个部分）');
+    }
+    return Column(
+      children: [
+        Expanded(
+          child: Scrollbar(
+            controller: _detailScroll,
+            child: SingleChildScrollView(
+              controller: _detailScroll,
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: SelectableText(
+                _detailMarkdown,
+                style: const TextStyle(fontSize: 14.5, height: 1.65),
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _copyDetail,
+                  icon: const Icon(Icons.copy_all, size: 18),
+                  label: const Text('复制全文'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _exportDetailMarkdown,
+                  icon: const Icon(Icons.ios_share, size: 18),
+                  label: const Text('导出 .md'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 复制详细笔记全文（方便贴到自己的笔记软件里二次编辑）
+  Future<void> _copyDetail() async {
+    await Clipboard.setData(ClipboardData(text: _detailMarkdown));
+    _showSnack('已复制全文');
+  }
+
+  /// 把详细笔记导出成 .md 文件并调起系统分享
+  Future<void> _exportDetailMarkdown() async {
+    if (_detailMarkdown.isEmpty || _exporting) return;
+    final box = context.findRenderObject() as RenderBox?;
+    final origin =
+        box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+    setState(() => _exporting = true);
+    try {
+      final dir = await getTemporaryDirectory();
+      final safeTitle =
+          _note!.title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
+      final file = File('${dir.path}/课堂笔记_$safeTitle.md');
+      await file.writeAsString(_detailMarkdown);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'text/markdown')],
+          text: '「${_note!.title}」详细课堂笔记',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (e) {
+      _showSnack('导出失败：${e.toString().replaceFirst('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
   }
 
   /// Tab 3：思维导图

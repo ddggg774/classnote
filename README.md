@@ -17,18 +17,22 @@
 
 > 说明：release 包用的是 Flutter 自动生成的调试签名，**可直接安装测试**。若要正式上架，请按下面 3.2 节配置自己的正式签名。
 
-### 当前验证状态（2026-11-19 优化后）
+### 当前验证状态（2026-11-20 详细笔记改版后）
 
 | 项 | 状态 |
 |---|---|
-| `flutter analyze` | ✅ No issues found（优化前为 8 条 info） |
-| `flutter test` | ✅ 15 个单元测试全部通过 |
-| `flutter build web --release` | ✅ 成功 |
-| **`flutter build apk --release`** | ✅ **成功，产出 49.9MB APK，签名已验证** |
+| `flutter analyze` | ✅ No issues found |
+| `flutter test` | ✅ 26 个单元测试全部通过 |
+| `flutter build apk --release` | ✅ 成功，50.2MB，签名已验证 |
 
-> 本机已配好完整构建环境：Flutter 3.50.0（`E:\dev\flutter`）、
-> JDK 21（`E:\dev\jdk-21.0.13+9`）、Android SDK 36（`E:\dev\android-sdk`）。
-> APK 在 `build/app/outputs/flutter-apk/app-release.apk`，另存了一份到 `E:\Downloads\classnote-release.apk`。
+> APK：`build/app/outputs/flutter-apk/app-release.apk`，副本 `E:\Downloads\classnote-release.apk`
+>
+> **构建须知（这台机器的两个坑，换机器可忽略）**：
+> 1. 用户名含中文（`C:\Users\金运来`）会让 `jni` 插件的 CMake/ninja 报
+>    `FindFirstFileExA` 路径语法错误。解决：把 `PUB_CACHE` 指到纯英文路径
+>    （本机用 `E:\dev\pub-cache`，已复制好）。
+> 2. `storage.googleapis.com` 在本机被解析到 `127.0.0.1`，Flutter 引擎产物拉不下来。
+>    已在 `android/settings.gradle.kts` 追加 `storage.flutter-io.cn` 镜像仓库。
 >
 > **详细的改动清单、每处改了什么为什么、以及 15 条必测场景，见 [优化改动说明.md](./优化改动说明.md)。**
 > 改动前的原始版本备份在 `E:\Downloads\_backup\classnote_backup_20261118_224041\`，且项目内已 `git init`，
@@ -43,7 +47,9 @@
 - **实时进度**：录音时顶部显示已录时长、第几段、已转写段数、排队段数
 - **锁屏可录**：录音期间起前台服务 + 常驻通知（显示已录时长），锁屏放桌上也能继续录，不怕系统回收进程
 - **崩溃可恢复**：录音一开始就落草稿，每段识别完成即写库；中途被杀/误退后，首页「未完成」分区可以继续
-- **一键 AI 总结**：把课堂原文提炼成 3~6 个核心要点；长课堂（两小时）自动分块总结，不会超上下文
+- **一键 AI 详细笔记**：点「一键总结」生成**九段式**详细课堂笔记（课程信息 / 知识点结构 / 例题与解题步骤 / 老师强调与考试作业提示 / 课堂互动问答 / 术语表 / 学习任务表 / 疑问待确认清单 / 时间戳回溯），可直接复制或导出 `.md` 二次编辑
+- **不编造、缺口标注**：转写不清、公式数字可疑的地方标〔待确认〕〔转写缺失〕，不会瞎补
+- **长课堂自动分块**：两小时课堂先分块整理再合并成完整笔记，不会超上下文
 - **思维导图**：自动按「主题 → 要点 → 子点」生成，可导出为图片分享
 - **API Key 应用内设置**：不用改代码、不用重新打包，装好后在 App 里填 Key 即可
 

@@ -30,3 +30,15 @@ plugins {
 }
 
 include(":app")
+
+// Flutter 引擎产物（io.flutter:arm64_v8a_release 等）由 Flutter 的 Gradle 插件
+// 注入一个指向 storage.googleapis.com 的仓库。国内这台机器上该域名被解析到
+// 127.0.0.1（连接被拒），导致 checkReleaseDuplicateClasses 阶段解析失败。
+// 这里追加同内容的国内镜像仓库；官方仓库仍保留，境外环境不受影响。
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://storage.flutter-io.cn/download.flutter.io")
+        }
+    }
+}
