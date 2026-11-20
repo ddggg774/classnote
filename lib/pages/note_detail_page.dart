@@ -14,6 +14,7 @@ import '../models/note.dart';
 import '../models/study_note.dart';
 import '../models/summary_level.dart';
 import '../services/db_service.dart';
+import '../services/pending_fixer.dart';
 import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
 import '../services/terminology_service.dart';
@@ -484,7 +485,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           ),
           const SizedBox(height: 4),
           ..._savedPending.map((p) => InkWell(
-                onTap: p.canLocate ? () => _jumpToPending(p) : null,
+                // 有候选就能直接选一个替换；没候选的只定位
+                onTap: () => _openPendingActions(p),
                 borderRadius: BorderRadius.circular(4),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
@@ -525,6 +527,209 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         ],
       ),
     );
+  }
+
+  /// 点击待确认项：有候选就让用户选一个直接替换，没候选就只定位。
+  Future<void> _openPendingActions(PendingItem item) async {
+    final candidates = item.candidates;
+    // 没有候选 → 只能说"去看看"，别假装能改
+    if (candidates.isEmpty) {
+      _jumpToPending(item);
+      return;
+    }
+
+    final choice = await showModalBottomSheet<_PendingAction>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '原文：${item.snippet}',
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (item.count > 1)
+                    Text('出现 ${item.count} 次',
+                        style: TextStyle(
+                            fontSize: 11.5, color: Colors.grey.shade600)),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '选一个正确的写法，会直接替换进原文',
+                  style: TextStyle(
+                      fontSize: 11.5, color: Colors.grey.shade600),
+                ),
+              ),
+            ),
+            ...candidates.map((c) => ListTile(
+                  dense: true,
+                  leading:
+                      const Icon(Icons.arrow_forward, size: 18, color: Colors.indigo),
+                  title: Text(c, style: const TextStyle(fontSize: 14)),
+                  subtitle: c == item.snippet
+                      ? Text('保持原样',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey.shade500))
+                      : null,
+                  onTap: () => Navigator.pop(
+                    ctx,
+                    _PendingAction(replacement: c),
+                  ),
+                )),
+            const SizedBox(height: 4),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.my_location, size: 18),
+              title: const Text('只定位，不改', style: TextStyle(fontSize: 14)),
+              onTap: () => Navigator.pop(
+                ctx,
+                const _PendingAction(jumpOnly: true),
+              ),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.check_circle_outline,
+                  size: 18, color: Colors.green),
+              title: const Text('这是对的，标记已核对',
+                  style: TextStyle(fontSize: 14)),
+              onTap: () => Navigator.pop(
+                ctx,
+                const _PendingAction(acceptAsIs: true),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+
+    if (choice == null || !mounted) return;
+    if (choice.jumpOnly) {
+      _jumpToPending(item);
+      return;
+    }
+    if (choice.acceptAsIs) {
+      await _removePending(item);
+      return;
+    }
+    await _applyPendingFix(item, choice.replacement!);
+  }
+
+  /// 执行替换：处理"多处出现"的选择，落库并重算其余待确认项位置
+  Future<void> _applyPendingFix(PendingItem item, String replacement) async {
+    final text = _transcriptController.text;
+    final occurrences = _countOccurrences(text, item.snippet);
+
+    // 多处出现时问一句：全替还是只替这一处
+    var all = false;
+    if (occurrences > 1) {
+      final mode = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('替换几处？'),
+          content: Text('「${item.snippet}」在原文里出现了 $occurrences 次。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'one'),
+              child: const Text('只改第 1 处'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'all'),
+              child: Text('全部改（$occurrences 处）'),
+            ),
+          ],
+        ),
+      );
+      if (mode == null || !mounted) return;
+      all = mode == 'all';
+    }
+
+    final result = PendingFixer.apply(text, item, replacement, all: all);
+    if (!result.changed) {
+      _showSnack('没找到「${item.snippet}」，原文可能已被改动');
+      return;
+    }
+
+    // 用替换后的新正文重算其余待确认项的位置
+    final remaining = PendingFixer.relocateAll(
+      result.text,
+      _savedPending
+          .where((p) => !(p.snippet == item.snippet &&
+              p.candidates.join('/') == item.candidates.join('/')))
+          .toList(),
+    );
+
+    _transcriptController.text = result.text;
+    await _persistPendingChange(result.text, remaining);
+
+    if (!mounted) return;
+    setState(() => _savedPending = remaining);
+    _showSnack('已替换 ${result.replaced} 处：${item.snippet} → $replacement');
+  }
+
+  /// 标记已核对（不改成文字，只从清单里去掉）
+  Future<void> _removePending(PendingItem item) async {
+    final remaining = _savedPending
+        .where((p) => !(p.snippet == item.snippet &&
+            p.candidates.join('/') == item.candidates.join('/')))
+        .toList();
+    await _persistPendingChange(_transcriptController.text, remaining);
+    if (!mounted) return;
+    setState(() => _savedPending = remaining);
+    _showSnack('已标记核对：${item.snippet}');
+  }
+
+  /// 把正文与待确认清单一起落库
+  Future<void> _persistPendingChange(
+    String newText,
+    List<PendingItem> remaining,
+  ) async {
+    final note = _note;
+    if (note == null) return;
+    final parsed = StudySummary.tryDecode(note.summaryJson);
+    final updated = note.copyWith(
+      transcript: newText,
+      summaryJson: parsed == null
+          ? note.summaryJson
+          : StudySummary(
+              detailMarkdown: parsed.detailMarkdown,
+              mindMap: parsed.mindMap,
+              graph: parsed.graph,
+              chunked: parsed.chunked,
+              pending: remaining,
+            ).encode(),
+    );
+    await _db.update(updated);
+    if (!mounted) return;
+    setState(() => _note = updated);
+  }
+
+  static int _countOccurrences(String text, String snippet) {
+    final s = snippet.trim();
+    if (s.isEmpty) return 0;
+    var count = 0;
+    var from = 0;
+    while (true) {
+      final idx = text.indexOf(s, from);
+      if (idx < 0) break;
+      count++;
+      from = idx + s.length;
+      if (from >= text.length) break;
+    }
+    return count;
   }
 
   /// 清除已核对的待确认项（只清存档，不动原文与总结）
@@ -620,8 +825,10 @@ class _NoteDetailPageState extends State<NoteDetailPage>
             const SizedBox(height: 8),
             _reportSectionTitle('待确认清单'),
             ...report.pending.take(6).map((p) => InkWell(
-                  // 能定位的才可点：找不到位置就别给假跳转
-                  onTap: p.canLocate ? () => _jumpToPending(p) : null,
+                  // 有候选就能选替换；没候选且能定位就只定位
+                  onTap: (p.candidates.isNotEmpty || p.canLocate)
+                      ? () => _openPendingActions(p)
+                      : null,
                   borderRadius: BorderRadius.circular(4),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
@@ -908,6 +1115,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       if (mounted) setState(() => _correcting = false);
     }
   }
+
+  /// 待确认项的选择结果
+  /// （放私有类里，避免污染全局命名空间）
 
   /// 点击待确认项：跳到「原文」Tab 并选中对应片段。
   ///
@@ -1294,4 +1504,22 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       ),
     );
   }
+}
+
+/// 待确认项弹窗的选择结果
+class _PendingAction {
+  /// 用户选定的正确写法（替换用）
+  final String? replacement;
+
+  /// 只定位不改
+  final bool jumpOnly;
+
+  /// 标记为正确，直接移除
+  final bool acceptAsIs;
+
+  const _PendingAction({
+    this.replacement,
+    this.jumpOnly = false,
+    this.acceptAsIs = false,
+  });
 }
