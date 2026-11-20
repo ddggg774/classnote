@@ -7,6 +7,8 @@
 // 换成 siliconflow_asr_key 时必须保留读取旧键的兼容逻辑，否则老用户升级后 Key 直接失效。
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config.dart';
+
 class SettingsService {
   // 单例
   SettingsService._internal();
@@ -15,6 +17,13 @@ class SettingsService {
 
   static const String _keyApiKey = 'deepseek_api_key';
   static const String _keyAsrKey = 'siliconflow_asr_key';
+
+  /// 语音识别模型（可在设置页切换）
+  static const String _keyAsrModel = 'asr_model';
+  /// 术语表：用户填写的专业名词，用于本地纠错
+  static const String _keyGlossary = 'glossary_terms';
+  /// 转写完成后是否自动 AI 纠错
+  static const String _keyAutoCorrect = 'auto_correct_enabled';
 
   /// 旧键名，仅用于一次性迁移读取
   static const String _legacyAsrKey = 'aliyun_asr_key';
@@ -67,4 +76,54 @@ class SettingsService {
   }
 
   Future<bool> hasAsrKey() async => (await getAsrKey()).isNotEmpty;
+
+  // ─── 语音识别模型 ───
+
+  /// 读取当前选用的识别模型；未设置时用默认值。
+  Future<String> getAsrModel() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_keyAsrModel);
+    if (saved != null && saved.isNotEmpty) return saved;
+    return AppConfig.asrModel;
+  }
+
+  Future<void> saveAsrModel(String model) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyAsrModel, model);
+  }
+
+  // ─── 术语表与纠错 ───
+
+  /// 读取术语表（每行一个，或逗号分隔，已在写入时规整成换行分隔）。
+  Future<String> getGlossary() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_keyGlossary) ?? '';
+  }
+
+  /// 保存术语表。会把逗号/顿号/分号统一成换行，方便下游按行切分。
+  Future<void> saveGlossary(String raw) async {
+    final prefs = await SharedPreferences.getInstance();
+    final normalized = raw
+        .split(RegExp(r'[\n,，、;；]'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .join('\n');
+    if (normalized.isEmpty) {
+      await prefs.remove(_keyGlossary);
+    } else {
+      await prefs.setString(_keyGlossary, normalized);
+    }
+  }
+
+  /// 是否在转写完成后自动做 AI 纠错（默认关闭：会多花一次调用并让收尾变慢）
+  Future<bool> getAutoCorrect() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyAutoCorrect) ?? false;
+  }
+
+  Future<void> saveAutoCorrect(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyAutoCorrect, enabled);
+  }
 }

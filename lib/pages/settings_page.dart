@@ -3,6 +3,7 @@
 // 都保存在本地，改 Key 无需重新打包。
 import 'package:material_ui/material_ui.dart';
 
+import '../config.dart';
 import '../services/settings_service.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -16,9 +17,14 @@ class _SettingsPageState extends State<SettingsPage> {
   final SettingsService _settings = SettingsService();
   final TextEditingController _deepSeekController = TextEditingController();
   final TextEditingController _asrController = TextEditingController();
+  final TextEditingController _glossaryController = TextEditingController();
   bool _obscureDeepSeek = true;
   bool _obscureAsr = true;
   bool _loading = true;
+  /// 当前选用的识别模型
+  String _asrModel = AppConfig.asrModel;
+  /// 转写后是否自动 AI 纠错
+  bool _autoCorrect = false;
 
   @override
   void initState() {
@@ -29,10 +35,16 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _load() async {
     final dsKey = await _settings.getApiKey();
     final asrKey = await _settings.getAsrKey();
+    final model = await _settings.getAsrModel();
+    final glossary = await _settings.getGlossary();
+    final auto = await _settings.getAutoCorrect();
     if (mounted) {
       setState(() {
         _deepSeekController.text = dsKey;
         _asrController.text = asrKey;
+        _glossaryController.text = glossary;
+        _asrModel = model;
+        _autoCorrect = auto;
         _loading = false;
       });
     }
@@ -75,6 +87,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
     if (dsKey.isNotEmpty) await _settings.saveApiKey(dsKey);
     if (asrKey.isNotEmpty) await _settings.saveAsrKey(asrKey);
+    // 模型选择、术语表、自动纠错开关每次保存都写（它们不是"空即保留"的语义）
+    await _settings.saveAsrModel(_asrModel);
+    await _settings.saveGlossary(_glossaryController.text);
+    await _settings.saveAutoCorrect(_autoCorrect);
 
     if (!mounted) return;
     final kept = <String>[
@@ -169,6 +185,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     _deepSeekController.dispose();
     _asrController.dispose();
+    _glossaryController.dispose();
     super.dispose();
   }
 
@@ -200,6 +217,42 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Divider(),
                 const SizedBox(height: 24),
 
+                // 识别模型选择：同一接口下可切换，用来对比哪个更准
+                const Text('识别模型',
+                    style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                (() {
+                  final options = AppConfig.asrModelOptions
+                      .map((m) => RadioListTile<String>(
+                            value: m.value,
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(m.label,
+                                style: const TextStyle(fontSize: 14)),
+                            subtitle: Text(m.note,
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600)),
+                          ))
+                      .toList();
+                  // Flutter 3.32 起 RadioListTile 的 groupValue/onChanged 已废弃，
+                  // 统一由 RadioGroup 祖先管理选中值与回调。
+                  return RadioGroup<String>(
+                    groupValue: _asrModel,
+                    onChanged: (v) =>
+                        setState(() => _asrModel = v ?? AppConfig.asrModel),
+                    child: Column(children: options),
+                  );
+                })(),
+                Text(
+                  '两个模型走同一个接口、同一个 Key。觉得识别不准时换另一个录一段对比。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                const SizedBox(height: 24),
+                const Divider(),
+                const SizedBox(height: 24),
+
                 // 总结 Key
                 _buildKeyField(
                   label: '② DeepSeek API Key（AI 总结用）',
@@ -215,6 +268,41 @@ class _SettingsPageState extends State<SettingsPage> {
                   helper: '用于把课堂文字总结成要点和思维导图。申请：https://platform.deepseek.com',
                 ),
                 const SizedBox(height: 24),
+
+                // 术语表：给 AI 纠错当参考词典
+                const Text('术语表（可选）',
+                    style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _glossaryController,
+                  maxLines: 4,
+                  decoration: InputDecoration(
+                    hintText: '每行一个，例如：洛必达法则 / ε-δ 定义 / 傅里叶变换',
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '填写本节课会用到的专业名词、人名，纠错时 AI 会优先按这些写法纠正。'
+                  '注意：硅基流动的识别接口本身不支持热词，这里只影响「转写后的纠错」。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  value: _autoCorrect,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('停止录音后自动 AI 纠错',
+                      style: TextStyle(fontSize: 14)),
+                  subtitle: Text(
+                    '会多一次 DeepSeek 调用、收尾多等几秒；也可以之后在笔记里手动纠错。',
+                    style:
+                        TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                  onChanged: (v) => setState(() => _autoCorrect = v),
+                ),
+                const SizedBox(height: 16),
 
                 const Text(
                   '两个 Key 都只保存在本机，不会上传。语音识别必须联网使用。\n'

@@ -15,6 +15,8 @@ import '../models/study_note.dart';
 import '../services/db_service.dart';
 import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
+import '../services/settings_service.dart';
+import '../services/transcript_corrector.dart';
 import '../widgets/mind_graph_tree.dart';
 import '../widgets/mind_map_widget.dart';
 
@@ -30,7 +32,18 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     with SingleTickerProviderStateMixin {
   final DbService _db = DbService();
   final AiService _ai = AiService();
+  final TranscriptCorrector _corrector = TranscriptCorrector();
+  final SettingsService _settingsService = SettingsService();
   final TextEditingController _transcriptController = TextEditingController();
+
+  /// 正在做 AI 纠错
+  bool _correcting = false;
+  /// 正在保存原文（防止连点）
+  bool _savingTranscript = false;
+  /// 本次纠错的改动清单
+  List<CorrectionChange> _corrections = const [];
+  /// 纠错前的原文，用于撤销
+  String? _undoTranscript;
 
   late TabController _tabController;
   final GlobalKey _captureKey = GlobalKey();
@@ -121,11 +134,22 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
   /// 保存用户手动修改后的原文
   Future<void> _saveTranscript() async {
-    if (_note == null) return;
-    final updated = _note!.copyWith(transcript: _transcriptController.text);
-    await _db.update(updated);
-    if (mounted) setState(() => _note = updated);
-    _showSnack('原文已保存');
+    if (_note == null || _savingTranscript) return;
+    setState(() => _savingTranscript = true);
+    try {
+      final updated = _note!.copyWith(transcript: _transcriptController.text);
+      await _db.update(updated);
+      if (!mounted) return;
+      setState(() {
+        _note = updated;
+        // 保存后纠错标记就该清了：改动已经落库，再"撤销"会与库里的内容不一致
+        _undoTranscript = null;
+        _corrections = const [];
+      });
+      _showSnack('原文已保存');
+    } finally {
+      if (mounted) setState(() => _savingTranscript = false);
+    }
   }
 
   void _showSnack(String msg) {
@@ -255,17 +279,130 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _saveTranscript,
-              icon: const Icon(Icons.save_outlined),
-              label: const Text('保存原文'),
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _savingTranscript ? null : _saveTranscript,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('保存原文'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  // AI 纠错：修 ASR 听岔的字词，不润色、不改内容
+                  onPressed: _correcting ? null : _correctTranscript,
+                  icon: _correcting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.spellcheck, size: 18),
+                  label: Text(_correcting ? '纠错中…' : 'AI 纠错'),
+                ),
+              ),
+            ],
           ),
         ),
+        // 纠错结果：显示改了什么，并允许撤销
+        if (_corrections.isNotEmpty)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.green.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.auto_fix_high,
+                        size: 16, color: Colors.green.shade700),
+                    const SizedBox(width: 6),
+                    Text('已修正 ${_corrections.length} 处',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.green.shade800)),
+                    const Spacer(),
+                    if (_undoTranscript != null)
+                      TextButton(
+                        onPressed: _undoCorrection,
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          minimumSize: const Size(0, 30),
+                        ),
+                        child: const Text('撤销', style: TextStyle(fontSize: 12)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                ..._corrections.take(8).map((c) => Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        '${c.before} → ${c.after}',
+                        style: TextStyle(
+                            fontSize: 12, color: Colors.grey.shade800),
+                      ),
+                    )),
+                if (_corrections.length > 8)
+                  Text('…等共 ${_corrections.length} 处',
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.grey.shade600)),
+              ],
+            ),
+          ),
       ],
     );
+  }
+
+  /// AI 纠错：只修 ASR 听岔的字词，不润色不改写。
+  /// 结果先写进编辑框但**不落库**，用户点「保存原文」才生效；
+  /// 同时保留一份撤销快照，改坏了能退回去。
+  Future<void> _correctTranscript() async {
+    if (_note == null || _correcting) return;
+    final original = _transcriptController.text;
+    if (original.trim().length < 10) {
+      _showSnack('内容太短，不需要纠错');
+      return;
+    }
+    setState(() => _correcting = true);
+    try {
+      final glossary = await _settingsService.getGlossary();
+      final result = await _corrector.correct(original, glossary: glossary);
+      if (!mounted) return;
+      if (result.changes.isEmpty) {
+        _showSnack('没有发现明显的识别错误');
+        return;
+      }
+      setState(() {
+        _undoTranscript = original;
+        _transcriptController.text = result.corrected;
+        _corrections = result.changes;
+      });
+      _showSnack('已修正 ${result.changes.length} 处，确认后可点「保存原文」');
+    } catch (e) {
+      _showSnack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _correcting = false);
+    }
+  }
+
+  void _undoCorrection() {
+    final original = _undoTranscript;
+    if (original == null) return;
+    setState(() {
+      _transcriptController.text = original;
+      _undoTranscript = null;
+      _corrections = const [];
+    });
+    _showSnack('已撤销纠错');
   }
 
   /// Tab 2：文字版总结（要点列表）

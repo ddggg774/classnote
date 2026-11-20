@@ -596,9 +596,13 @@ class CloudAsrService {
     }
 
     final uri = Uri.parse(AppConfig.asrBaseUrl);
+    // 模型名从设置里读，用户可以在设置页切换 SenseVoiceSmall / TeleSpeechASR 做对比。
+    final model = await _settings.getAsrModel();
     final request = http.MultipartRequest('POST', uri)
       ..headers['Authorization'] = 'Bearer $apiKey'
-      ..fields['model'] = AppConfig.asrModel
+      // 注意：硅基流动这个接口只接受 file 和 model 两个字段，
+      // 不要试图加 hotwords / prompt / language，官方文档里没有这些参数。
+      ..fields['model'] = model
       ..files.add(await http.MultipartFile.fromPath('file', filePath,
           filename: 'audio.wav'));
 
