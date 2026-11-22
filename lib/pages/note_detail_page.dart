@@ -18,12 +18,14 @@ import '../services/db_service.dart';
 import '../services/settings_service.dart';
 import '../services/pending_fixer.dart';
 import '../services/template_service.dart';
+import '../services/tree_layout.dart';
 import '../services/wiki_service.dart';
 import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
 import '../services/terminology_service.dart';
 import '../services/transcript_corrector.dart';
 import '../models/terminology.dart';
+import '../widgets/graph_canvas.dart';
 import '../widgets/mind_graph_tree.dart';
 import '../widgets/mind_map_widget.dart';
 
@@ -81,6 +83,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   bool _summarizing = false;
   /// 总结详细度，默认标准档
   SummaryLevel _level = SummaryLevel.normal;
+
+  /// 导图视图：树形（默认，屏幕小更好用）还是 2D 画布
+  bool _useCanvas = false;
 
   /// 当前使用的笔记模板（为空时按课程自动推荐）
   NoteTemplate? _template;
@@ -1320,6 +1325,79 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     _showSnack('已撤销校准');
   }
 
+  /// 点画布节点时弹一个小面板显示正文（不跳走，保持画布位置）
+  void _showCanvasNodeInfo(LayoutNode node) {
+    if (node.details.isEmpty && node.childIndices.isEmpty) return;
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(node.title,
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
+                  ),
+                  if (node.mark != NodeMark.none)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(node.mark.name,
+                          style: TextStyle(
+                              fontSize: 9.5, color: Colors.amber.shade900)),
+                    ),
+                ],
+              ),
+              if (node.relation != null && node.relation!.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('与上级的关系：${node.relation}',
+                    style: TextStyle(
+                        fontSize: 11.5, color: Colors.grey.shade600)),
+              ],
+              if (node.details.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                ...node.details.map((d) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('· ',
+                              style: TextStyle(color: Colors.grey.shade500)),
+                          Expanded(
+                            child: Text(d,
+                                style: const TextStyle(
+                                    fontSize: 12.5, height: 1.5)),
+                          ),
+                        ],
+                      ),
+                    )),
+              ],
+              const SizedBox(height: 6),
+              Text(
+                node.childIndices.isEmpty
+                    ? '叶子节点'
+                    : '有 ${node.childIndices.length} 个子节点（双击可折叠）',
+                style:
+                    TextStyle(fontSize: 11, color: Colors.grey.shade500),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Tab 2：文字版总结（要点列表）
   Widget _buildSummaryTab() {
     if (_mindMap == null) return _buildEmptyHint('还没有总结，点右下角「一键总结」生成');
@@ -1480,12 +1558,54 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               ],
             ),
           ),
+        // 视图切换：画布看全局，树看细节
+        if (branch == null)
+          Container(
+            width: double.infinity,
+            color: Colors.grey.shade50,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            child: Row(
+              children: [
+                Icon(
+                  _useCanvas ? Icons.account_tree : Icons.view_list,
+                  size: 14,
+                  color: Colors.grey.shade600,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _useCanvas ? '画布视图（看全局）' : '树形视图（看细节）',
+                  style: TextStyle(
+                      fontSize: 11.5, color: Colors.grey.shade700),
+                ),
+                const Spacer(),
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('树形')),
+                    ButtonSegment(value: true, label: Text('画布')),
+                  ],
+                  selected: {_useCanvas},
+                  onSelectionChanged: (v) =>
+                      setState(() => _useCanvas = v.first),
+                  style: ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                    textStyle: WidgetStateProperty.all(
+                        const TextStyle(fontSize: 11.5)),
+                  ),
+                ),
+              ],
+            ),
+          ),
         Expanded(
           child: branch == null
-              ? MindGraphOverview(
-                  graph: graph,
-                  onBranchTap: (b) => setState(() => _activeBranch = b),
-                )
+              ? (_useCanvas
+                  ? GraphCanvas(
+                      graph: graph,
+                      onNodeTap: (node) => _showCanvasNodeInfo(node),
+                    )
+                  : MindGraphOverview(
+                      graph: graph,
+                      onBranchTap: (b) => setState(() => _activeBranch = b),
+                    ))
               : MindGraphSubtree(branch: branch),
         ),
         Padding(
