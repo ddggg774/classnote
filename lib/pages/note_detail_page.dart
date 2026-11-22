@@ -11,10 +11,12 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/mind_graph.dart';
 import '../models/note.dart';
+import '../models/note_template.dart';
 import '../models/study_note.dart';
 import '../models/summary_level.dart';
 import '../services/db_service.dart';
 import '../services/pending_fixer.dart';
+import '../services/template_service.dart';
 import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
 import '../services/terminology_service.dart';
@@ -70,6 +72,12 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   bool _summarizing = false;
   /// 总结详细度，默认标准档
   SummaryLevel _level = SummaryLevel.normal;
+
+  /// 当前使用的笔记模板（为空时按课程自动推荐）
+  NoteTemplate? _template;
+
+  /// 全部可用模板（内置 + 自定义），进页面时加载一次
+  List<NoteTemplate> _templates = TemplateService.builtins;
   bool _exporting = false;
   bool _notFound = false;
   int _tabIndex = 0;
@@ -97,6 +105,13 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       return;
     }
     _transcriptController.text = note.transcript;
+    // 自定义模板加载失败不该挡住笔记打开
+    try {
+      final custom = await _db.queryTemplates();
+      if (mounted) {
+        _templates = TemplateService.merge(custom: custom);
+      }
+    } catch (_) {}
     // StudySummary.tryDecode 兼容三种历史形态：
     // ① 新格式（带 detail）；② 旧格式（只有 mindMap）；③ 坏数据（返回 null）
     final parsed = StudySummary.tryDecode(note.summaryJson);
@@ -108,6 +123,12 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _terms = TerminologyPack.tryDecode(note.terminologyJson);
       _detailMarkdown = parsed?.detailMarkdown ?? '';
       _savedPending = parsed?.pending ?? const [];
+      // 模板：存过就按存的来，没存过按课程推荐
+      final savedTpl = note.templateId;
+      _template = (savedTpl != null
+              ? TemplateService.builtinById(savedTpl)
+              : null) ??
+          TemplateService.recommendFor(note.effectiveCourse);
     });
   }
 
@@ -120,45 +141,120 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     await _generateSummary();
   }
 
-  /// 选择总结档位（速览 / 标准 / 详细）。返回 null 表示用户取消。
+  /// 选择模板与档位。返回 null 表示用户取消。
+  ///
+  /// 两件事放一个面板：模板决定「有哪些章节」，档位决定「写多细」，
+  /// 它们是一起生效的，分开两次弹窗用户会漏选。
   Future<SummaryLevel?> _pickLevel() async {
+    var level = _level;
+    var template = _template ?? _templates.first;
+
     final picked = await showModalBottomSheet<SummaryLevel>(
       context: context,
       showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Row(
-                children: [
-                  Text('总结详细度',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                ],
-              ),
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.8,
             ),
-            ...SummaryLevel.values.map((lv) => ListTile(
-                  leading: Icon(
-                    lv == _level
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_unchecked,
-                    color: lv == _level ? Colors.indigo : Colors.grey,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: Row(children: [
+                    Text('笔记模板',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
+                  ]),
+                ),
+                ..._templates.map((t) => ListTile(
+                      dense: true,
+                      leading: Icon(
+                        t.id == template.id
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                        color: t.id == template.id
+                            ? Colors.indigo
+                            : Colors.grey,
+                      ),
+                      title: Row(children: [
+                        Flexible(child: Text(t.name)),
+                        if (t.builtin)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 6),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.indigo.shade50,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text('内置',
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.indigo.shade700)),
+                            ),
+                          ),
+                      ]),
+                      subtitle: t.scene.isEmpty
+                          ? null
+                          : Text(t.scene,
+                              style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: Colors.grey.shade600)),
+                      onTap: () => setSheet(() => template = t),
+                    )),
+                const Divider(height: 20),
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: Row(children: [
+                    Text('详细度',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
+                  ]),
+                ),
+                ...SummaryLevel.values.map((lv) => ListTile(
+                      dense: true,
+                      leading: Icon(
+                        lv == level
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                        color: lv == level ? Colors.indigo : Colors.grey,
+                      ),
+                      title: Text(lv.label),
+                      subtitle: Text(lv.description,
+                          style: TextStyle(
+                              fontSize: 11.5, color: Colors.grey.shade600)),
+                      onTap: () => setSheet(() => level = lv),
+                    )),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 46,
+                    child: FilledButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _level = level;
+                          _template = template;
+                        });
+                        Navigator.pop(ctx, level);
+                      },
+                      icon: const Icon(Icons.auto_awesome, size: 18),
+                      label: Text('用「${template.name}·${level.label}」生成'),
+                    ),
                   ),
-                  title: Text(lv.label),
-                  subtitle: Text(lv.description,
-                      style: TextStyle(
-                          fontSize: 12, color: Colors.grey.shade600)),
-                  onTap: () => Navigator.pop(ctx, lv),
-                )),
-            const SizedBox(height: 8),
-          ],
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
     if (picked == null || !mounted) return null;
-    setState(() => _level = picked);
     return picked;
   }
 
@@ -173,12 +269,15 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       final result = await _ai.summarize(
         currentTranscript,
         level: _level,
-        courseName: _note!.title,
+        // 用结构化课程名，老笔记自动回退 title
+        courseName: _note!.effectiveCourse,
+        template: _template,
       );
       final summaryJson = result.encode();
       final updated = _note!.copyWith(
         summaryJson: summaryJson,
         transcript: currentTranscript,
+        templateId: _template?.id,
       );
       await _db.update(updated);
 
@@ -288,7 +387,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               icon: const Icon(Icons.auto_awesome),
               label: Text(
                 '${_detailMarkdown.isEmpty ? '一键总结' : '重新总结'}'
-                '· ${_level.label}',
+                '· ${_template?.name ?? '模板'}',
               ),
             ),
       // 关键：总结期间不再把整个 IndexedStack 换成 spinner。

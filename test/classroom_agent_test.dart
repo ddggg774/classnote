@@ -16,6 +16,7 @@ import 'package:classnote/agent/agent_loop.dart';
 import 'package:classnote/agent/agent_tool.dart';
 import 'package:classnote/models/mind_graph.dart';
 import 'package:classnote/models/note.dart' show MindMapData;
+import 'package:classnote/models/note_template.dart';
 import 'package:classnote/models/study_note.dart';
 import 'package:classnote/models/summary_level.dart';
 import 'package:classnote/models/terminology.dart';
@@ -132,6 +133,7 @@ class _FakeAi extends AiService {
     String transcript, {
     SummaryLevel level = SummaryLevel.normal,
     String courseName = '',
+    NoteTemplate? template,
   }) async {
     callCount++;
     lastLevel = level;

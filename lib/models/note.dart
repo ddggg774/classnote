@@ -17,6 +17,16 @@ class Note {
   /// 课前术语表（TerminologyPack 的 JSON），可为空
   final String? terminologyJson;
 
+  /// 结构化课程归属（如「植物学」）。
+  ///
+  /// 为什么要单独一个字段：title 是用户随手写的（常是「11月22日第三讲」），
+  /// 而模板匹配、术语表检索、Wiki 组织都需要准确的课程名。
+  /// 为空表示老笔记，读的时候回退用 title。
+  final String? course;
+
+  /// 生成总结时使用的模板 ID，空表示九段式
+  final String? templateId;
+
   Note({
     required this.id,
     required this.title,
@@ -26,10 +36,19 @@ class Note {
     this.duration = 0,
     this.status = statusDone,
     this.terminologyJson,
+    this.course,
+    this.templateId,
   });
 
   /// 是否已生成总结
   bool get hasSummary => summaryJson != null && summaryJson!.isNotEmpty;
+
+  /// 实际用于匹配课程的名字：优先 course，老笔记回退 title。
+  /// 所有需要「课程」的地方都应该读这个，而不是直接用 title。
+  String get effectiveCourse {
+    final c = (course ?? '').trim();
+    return c.isEmpty ? title.trim() : c;
+  }
 
   /// 是否是「还没点完成」的草稿（崩溃/误退后可在首页继续）
   bool get isDraft => status == statusDraft;
@@ -46,6 +65,8 @@ class Note {
       // 老库没有 status 列时按「已完成」处理，保持向后兼容
       status: (map['status'] as String?) ?? statusDone,
       terminologyJson: map['terminology_json'] as String?,
+      course: map['course'] as String?,
+      templateId: map['template_id'] as String?,
     );
   }
 
@@ -60,6 +81,8 @@ class Note {
       'duration': duration,
       'status': status,
       'terminology_json': terminologyJson,
+      'course': course,
+      'template_id': templateId,
     };
   }
 
@@ -77,6 +100,9 @@ class Note {
     String? status,
     String? terminologyJson,
     bool clearTerminology = false,
+    String? course,
+    bool clearCourse = false,
+    String? templateId,
   }) {
     return Note(
       id: id,
@@ -89,6 +115,8 @@ class Note {
       terminologyJson: clearTerminology
           ? null
           : (terminologyJson ?? this.terminologyJson),
+      course: clearCourse ? null : (course ?? this.course),
+      templateId: templateId ?? this.templateId,
     );
   }
 }

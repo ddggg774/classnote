@@ -11,6 +11,7 @@ import 'package:path/path.dart';
 
 import '../config.dart';
 import '../models/note.dart';
+import '../models/note_template.dart';
 
 class DbService {
   // 单例：整个 App 共用一个数据库实例
@@ -21,8 +22,10 @@ class DbService {
   /// 当前 schema 版本。
   /// v1 = 初始；v2 = 增加 status（草稿/已完成）；
   /// v3 = 增加 terminology_json（课前术语表）；
-  /// v4 = 增加 terminology_cache 表（按课程+章节缓存术语表，避免重复生成）。
-  static const int dbVersion = 4;
+  /// v4 = 增加 terminology_cache 表（按课程+章节缓存术语表，避免重复生成）；
+  /// v5 = notes 增加 course（结构化课程归属）与 template_id（使用的笔记模板），
+  ///      新增 templates 表存用户自定义模板。
+  static const int dbVersion = 5;
 
   Database? _db;
 
@@ -44,10 +47,13 @@ class DbService {
             created_at INTEGER NOT NULL,
             duration INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'done',
-            terminology_json TEXT
+            terminology_json TEXT,
+            course TEXT,
+            template_id TEXT
           )
         ''');
         await _createTerminologyCache(db);
+        await _createTemplates(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // 逐版本迁移，每个分支独立、可重入
@@ -70,6 +76,13 @@ class DbService {
         if (oldVersion < 4) {
           await _createTerminologyCache(db);
         }
+        if (oldVersion < 5) {
+          // 老笔记的 course 留空，读的时候回退用 title——
+          // 不能拿 title 猜一个课程塞进去，猜错比空着更糟。
+          await _addColumnIfMissing(db, 'notes', 'course', 'TEXT');
+          await _addColumnIfMissing(db, 'notes', 'template_id', 'TEXT');
+          await _createTemplates(db);
+        }
       },
     );
     return _db!;
@@ -91,6 +104,21 @@ class DbService {
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_term_course ON terminology_cache(course)',
     );
+  }
+
+  /// 用户自定义模板表。内置模板不落库（跟着版本走），这里只存用户改出来的。
+  Future<void> _createTemplates(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS templates (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        scene TEXT,
+        course TEXT,
+        template_json TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )
+    ''');
   }
 
   /// 加列前先查 PRAGMA table_info，保证迁移可重复执行（避免重复 ALTER 抛错）
@@ -156,6 +184,47 @@ class DbService {
 
   /// 清掉一天前创建、既没有标题也没有正文的空白草稿
   /// （用户点进录音页又立刻退出会产生）。限定 24 小时以上，避免误删正在用的草稿。
+  // ───────────────────── 自定义模板 ─────────────────────
+
+  /// 读取全部用户自定义模板（内置模板不在这里，它们写死在 TemplateService）
+  Future<List<NoteTemplate>> queryTemplates() async {
+    try {
+      final db = await database;
+      final rows = await db.query('templates', orderBy: 'sort_order ASC, created_at ASC');
+      final out = <NoteTemplate>[];
+      for (final r in rows) {
+        final t = NoteTemplate.tryDecode(r['template_json'] as String?);
+        if (t != null) out.add(t);
+      }
+      return out;
+    } catch (_) {
+      // 模板表读失败不该让整个 App 打不开，当作没有自定义模板
+      return [];
+    }
+  }
+
+  Future<void> saveTemplate(NoteTemplate template) async {
+    final db = await database;
+    await db.insert(
+      'templates',
+      {
+        'id': template.id,
+        'name': template.name,
+        'scene': template.scene,
+        'course': template.course,
+        'template_json': template.encode(),
+        'sort_order': template.sortOrder,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> deleteTemplate(String id) async {
+    final db = await database;
+    await db.delete('templates', where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<int> purgeEmptyDrafts() async {
     final db = await database;
     final cutoff = DateTime.now()

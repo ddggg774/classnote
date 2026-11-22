@@ -16,6 +16,7 @@ import 'package:uuid/uuid.dart';
 
 import '../agent/classroom_agent.dart';
 import '../models/mind_graph.dart';
+import '../config.dart';
 import '../models/note.dart';
 import '../models/study_note.dart';
 import '../models/summary_level.dart';
@@ -23,6 +24,7 @@ import '../models/terminology.dart';
 import '../services/cloud_asr_service.dart';
 import '../services/db_service.dart';
 import '../services/settings_service.dart';
+import '../services/template_service.dart';
 import '../widgets/agent_run_sheet.dart';
 
 class RecordPage extends StatefulWidget {
@@ -39,6 +41,10 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
   final DbService _db = DbService();
   final CloudAsrService _asr = CloudAsrService();
   final TextEditingController _titleController = TextEditingController();
+
+  /// 结构化课程归属。为空时表示用户没选，保存时 course 留空、读的时候回退 title。
+  /// 模板匹配、术语表检索都依赖它，所以值得单独一个字段而不是从标题猜。
+  String? _course;
   final TextEditingController _transcriptController = TextEditingController();
 
   /// 正在等待「停止 → 最后一段识别完成」的收尾过程
@@ -72,6 +78,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     final note = await _db.queryById(id);
     if (note == null || !mounted) return;
     _titleController.text = note.title;
+    _course = note.course;
     _transcriptController.text = note.transcript;
     _lastSavedTranscript = note.transcript;
     setState(() {});
@@ -278,11 +285,19 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         builder: (_) => AgentRunSheet(
           agent: agent,
           request: ClassroomRequest(
-            courseName: title,
+            // 课程优先用用户选的，没选才退回标题——
+            // 模板匹配与术语表都要准确的课程名，不能靠标题猜。
+            courseName: (_course ?? '').trim().isNotEmpty
+                ? _course!.trim()
+                : title,
             chapter: '',
             level: options.level,
             existingTranscript: text,
             wantMindMap: options.wantMindMap,
+            // 课程决定模板：制图课自动用制图模板，其余九段式
+            template: TemplateService.recommendFor(
+              (_course ?? '').trim().isNotEmpty ? _course!.trim() : title,
+            ),
             // 音频已在录音阶段转写完，这里不再传片段：
             // Agent 的 transcribe 只处理"还没转写的音频"，
             // 重复转写会白花钱。
@@ -399,6 +414,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           summaryJson: summaryJson,
           duration: _asr.recordedSeconds,
           status: Note.statusDone,
+          course: _course,
         ));
       }
     } else {
@@ -410,6 +426,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         createdAt: DateTime.now(),
         duration: _asr.recordedSeconds,
         status: Note.statusDone,
+        course: _course,
       ));
     }
 
@@ -526,6 +543,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           transcript: text,
           duration: _asr.recordedSeconds,
           status: Note.statusDone,
+          course: _course,
         ));
       }
     } else {
@@ -536,9 +554,96 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         createdAt: DateTime.now(),
         duration: _asr.recordedSeconds,
         status: Note.statusDone,
+        course: _course,
       ));
     }
     if (mounted) Navigator.of(context).pop();
+  }
+
+  /// 课程选择行。
+  ///
+  /// 为什么不让用户直接填：课程名是模板匹配、术语表检索、Wiki 组织的键。
+  /// 自由填写会写出「11月22日第三讲」这种无法匹配的值。
+  /// 这里给三个教材课程做快捷选择 + 「自定义」，一次点击就能定准。
+  Widget _buildCoursePicker() {
+    final selected = (_course ?? '').trim();
+    final options = <String>[
+      for (final t in AppConfig.textbooks) t.course,
+    ];
+    final isPreset = options.contains(selected);
+
+    return Row(
+      children: [
+        Icon(Icons.school_outlined,
+            size: 18, color: Colors.grey.shade600),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              for (final o in options)
+                ChoiceChip(
+                  label: Text(o, style: const TextStyle(fontSize: 12)),
+                  selected: selected == o,
+                  visualDensity: VisualDensity.compact,
+                  onSelected: (v) =>
+                      setState(() => _course = v ? o : null),
+                ),
+              if (selected.isNotEmpty && !isPreset)
+                // 自定义课程名不在预设里，单独显示以便取消
+                InputChip(
+                  label: Text(selected, style: const TextStyle(fontSize: 12)),
+                  selected: true,
+                  onDeleted: () => setState(() => _course = null),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ActionChip(
+                avatar: const Icon(Icons.add, size: 14),
+                label: const Text('自定义', style: TextStyle(fontSize: 12)),
+                visualDensity: VisualDensity.compact,
+                onPressed: _pickCustomCourse,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 输入自定义课程名
+  Future<void> _pickCustomCourse() async {
+    final ctrl = TextEditingController(text: _course ?? '');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('课程名'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '例如：植物学',
+            helperText: '写课程名，不要写「第三讲」这种——模板和术语表要靠它匹配',
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    // 对话框关闭动画期间 TextField 仍会引用 controller，延后释放
+    WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.dispose());
+    if (result == null || !mounted) return;
+    setState(() => _course = result.isEmpty ? null : result);
   }
 
   void _showSnack(String msg) {
@@ -626,6 +731,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                         prefixIcon: const Icon(Icons.edit),
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    _buildCoursePicker(),
                     const SizedBox(height: 12),
 
                     if (recording || _recognizing || p.failedSegments > 0)

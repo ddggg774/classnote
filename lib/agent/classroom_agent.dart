@@ -16,9 +16,11 @@
 // 同理，Agent 的产物是文本与结构，落库由调用方决定。
 import '../models/mind_graph.dart';
 import '../models/study_note.dart';
+import '../models/note_template.dart';
 import '../models/summary_level.dart';
 import '../services/ai_service.dart';
 import '../services/cloud_asr_service.dart';
+import '../services/template_service.dart';
 import 'agent_loop.dart';
 import 'agent_tool.dart';
 import 'correction_agent.dart';
@@ -41,6 +43,10 @@ class ClassroomRequest {
   /// 避免"用户关了但还在花这次调用的钱"。
   final bool wantMindMap;
 
+  /// 笔记模板。为空时按课程自动推荐（TemplateService.recommendFor）。
+  /// 走 Agent 路径也必须带上，否则「一键处理」和详情页生成的笔记格式不一致。
+  final NoteTemplate? template;
+
   const ClassroomRequest({
     required this.courseName,
     required this.chapter,
@@ -48,6 +54,7 @@ class ClassroomRequest {
     this.existingTranscript,
     this.audioChunks = const [],
     this.wantMindMap = true,
+    this.template,
   });
 
   bool get hasTranscript =>
@@ -372,6 +379,9 @@ class ClassroomAgent {
               text,
               level: level,
               courseName: course,
+              // 模板没传就按课程推荐，保证与详情页一致
+              template: request.template ??
+                  TemplateService.recommendFor(course),
             );
           } catch (e) {
             return ToolResult.error(

@@ -19,7 +19,9 @@ import 'package:http/http.dart' as http;
 import '../config.dart';
 import '../models/mind_graph.dart';
 import '../models/note.dart';
+import '../models/note_template.dart';
 import '../models/summary_level.dart';
+import 'template_service.dart';
 import '../models/study_note.dart';
 import 'settings_service.dart';
 
@@ -63,9 +65,14 @@ class AiService {
   /// 2) 明确列出「不许编造 / 缺失必须标注」，这是验收标准里最硬的一条；
   /// 3) 明确要求说明逻辑关系、而不是堆关键词；
   /// 4) 末尾要求附一段 JSON 供思维导图用，一次调用产出两份东西。
-  static const String _detailSystemPrompt = '''
+  /// 提示词通用开头。所有模板共用，不含任何随模板变化的内容。
+  static const String _promptHeader = '''
 你是一名严谨的大学课堂笔记整理专家。你的任务是把课堂录音转写稿，整理成一份**详细、可直接用来复习**的结构化笔记。
 
+''';
+
+  /// 防编造铁律。**任何模板都不得覆盖这一段**——这是产出可信的底线。
+  static const String _promptIronRules = '''
 ## 最高优先级铁律（违反即不合格）
 1. **绝对不能编造**。原文没说的定义、公式、数字、人名、结论，一律不许补。
 2. 转写听不清、句子断裂、公式或数字可疑、人名/术语拿不准的地方，**必须**标注 `〔待确认〕` 或 `〔转写缺失〕` 并写清哪里可疑。
@@ -73,6 +80,10 @@ class AiService {
 4. 如果某一节原文里确实没有对应内容，写「本节未提及」，**不要**为了凑结构而虚构。
 5. 输出只允许是 Markdown 正文，不要加任何解释性开场白。
 
+''';
+
+  /// 通用整理要求（去口语、书面语重述、标来源、保留时间戳）。所有模板共用。
+  static const String _promptWritingRules = '''
 ## 整理要求
 - 去掉口语重复、语气词（"啊/呢/那个/就是说"）和明显的转写错误；用书面语重述，但**不改变原意**。
 - 不要只列关键词。每个知识点要说明**逻辑关系**：是什么 → 为什么 → 怎么用 → 适用条件。
@@ -80,7 +91,11 @@ class AiService {
 - 详细程度：**约为原文长度的 20%~40%**，以"完整可复习"为先，宁详勿略。
 - 原文里出现的时间点（如果转写稿带时间戳）请尽量保留；没有时间戳就引用原文片段代替，用「」括起来。
 
-## 输出结构（严格按此顺序与标题）
+''';
+
+  /// 九段式的章节正文。抽出来是为了让详情档的「加引用要求」能插在它前面，
+  /// 也方便对照模板系统的等价实现。
+  static const String _detailSections = '''
 # 课程信息
 - 课程名 / 本节主题 / 学习目标 / 与前后知识的关联
 
@@ -122,6 +137,11 @@ class AiService {
 # 时间戳回溯
 关键知识点、例题、作业考试提示的时间点或原文片段索引。
 
+''';
+
+  /// 思维导图 JSON 的输出规范。与章节解耦：模板只决定正文结构，
+  /// 导图默认仍用 11 个固定一级分支（MindGraph.requiredBranches）。
+  static const String _promptMindmapSpec = '''
 ## 额外要求
 在 Markdown 正文的**最末尾**，附一个 JSON 代码块，内容是一棵**详细思维导图**（同样不许编造）。
 这份导图会被渲染成树形浏览 + 导出到 XMind，所以结构必须规范：
@@ -153,6 +173,17 @@ class AiService {
 6. **mark 字段**（视觉编码）只能是这几个值之一：`key`(★重点) `hard`(▲难点)
    `pitfall`(⚠易错) `exam`(◆考点) `unconfirmed`(❓待确认) `quote`(「」老师原话) `none`。
 7. details 是 **字符串数组**，不是对象；children 是 **节点数组**，没有子节点就给 `[]` 或省略。
+''';
+
+  /// 九段式完整提示词。由上面的分段拼成，行为与拆分前完全一致：
+  /// 铁律与整理要求一字未改，只是从一段大字符串拆成了可复用的常量。
+  static const String _detailSystemPrompt = '''
+$_promptHeader
+$_promptIronRules
+$_promptWritingRules
+## 输出结构（严格按此顺序与标题）
+$_detailSections
+$_promptMindmapSpec
 ''';
 
   /// 超长课堂的「分块整理」提示词：只整理结构，不做最终排版
@@ -295,6 +326,99 @@ $textbook
     }
   }
 
+  /// 按「模板 + 档位」组装主提示词。
+  ///
+  /// 【分派策略：内置模板走原路径，新模板走通用拼装】
+  /// 九段式与速览是现在线上跑通的形态，让它们继续走 buildPromptForLevel，
+  /// 产出与改造前逐字一致——零回归风险。
+  /// 其余模板（实验报告 / 制图 / 用户自定义）走 _buildFromTemplate，
+  /// 用同一套铁律与整理要求，只替换章节部分。
+  ///
+  /// 这样做的代价是有两条路径，但换来的是「改模板不会碰坏已验证的产出质量」，
+  /// 对一个已经能用的 App 来说这笔交易划算。
+  static String buildPrompt(
+    NoteTemplate template,
+    SummaryLevel level, {
+    String courseName = '',
+  }) {
+    switch (template.id) {
+      case BuiltinTemplate.general:
+        return buildPromptForLevel(level, courseName: courseName);
+      case BuiltinTemplate.brief:
+        // 速览模板本身就是「brief 档那三节」，档位再叠加没有意义
+        return buildPromptForLevel(SummaryLevel.brief, courseName: courseName);
+      default:
+        return _buildFromTemplate(template, level, courseName: courseName);
+    }
+  }
+
+  /// 用模板的章节拼出提示词。
+  /// 铁律与整理要求原样复用，只换「输出结构」那一段。
+  static String _buildFromTemplate(
+    NoteTemplate template,
+    SummaryLevel level, {
+    String courseName = '',
+  }) {
+    final textbook = _textbookBlock(courseName);
+    final b = StringBuffer()
+      ..writeln(_promptHeader.trimRight())
+      ..writeln()
+      ..writeln(_promptIronRules.trimRight())
+      ..writeln()
+      // 详细档的加分要求插在整理要求之前，与现有 detail 档保持同一位置
+      ..writeln(_levelExtraRules(level))
+      ..writeln(_promptWritingRules.trimRight())
+      ..writeln()
+      ..writeln('## 输出结构（严格按此顺序与标题）')
+      ..writeln();
+
+    for (final section in template.sections) {
+      b.writeln(section.render());
+      b.writeln();
+    }
+
+    b.writeln(_mindmapSpecFor(template));
+    final body = b.toString().trimRight();
+    return textbook.isEmpty ? body : '$body\n$textbook';
+  }
+
+  /// 档位叠加的额外要求（空串表示不加）
+  static String _levelExtraRules(SummaryLevel level) {
+    if (level != SummaryLevel.detail) return '';
+    return '''## 本档特别要求（详细版）
+在下面所有章节里，**每个知识点、每道例题、每条考试作业提示**都要附上：
+- 原文引用：用「」引出老师原话片段
+- 时间戳：如果转写稿带时间戳就标（如 12:30），没有就省略时间戳只留引用
+
+引用必须逐字来自原文，不许改写、不许编造。
+引用和正文用换行分开，格式示例：
+  - 定义：……（正文）
+    > 「老师原话……」（03:20）
+''';
+  }
+
+  /// 导图规范。模板声明了 mindmapBranches 就用它，否则沿用 11 个固定分支。
+  ///
+  /// 为什么默认沿用固定 11 个：MindGraph.requiredBranches、
+  /// 导出器与既有测试全都依赖这 11 个分支名，
+  /// 让模板静默换掉它们会把渲染和导出一起弄坏。
+  static String _mindmapSpecFor(NoteTemplate template) {
+    if (!template.overridesMindmap) return _promptMindmapSpec.trimRight();
+    final branches = template.mindmapBranches
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (branches.isEmpty) return _promptMindmapSpec.trimRight();
+    return _promptMindmapSpec
+        .trimRight()
+        .replaceFirst(
+          RegExp(r'一级分支固定这 \d+ 个，顺序不变\*\*：[^。]*。',
+              multiLine: true),
+          '一级分支固定这 ${branches.length} 个，顺序不变**：'
+          '${branches.join('、')}。',
+        );
+  }
+
   /// 分块整理用的提示词（长课堂才有），带上教材信息
   static String buildChunkPrompt({String courseName = ''}) {
     final textbook = _textbookBlock(courseName);
@@ -327,6 +451,7 @@ $textbook
     String transcript, {
     SummaryLevel level = SummaryLevel.normal,
     String courseName = '',
+    NoteTemplate? template,
   }) async {
     final text = transcript.trim();
     if (text.length < 10) {
@@ -339,8 +464,13 @@ $textbook
           needSettings: true, retryable: false);
     }
 
-    // 按档位选择提示词，并把教材信息拼进去
-    final systemPrompt = buildPromptForLevel(level, courseName: courseName);
+    // 按模板+档位选择提示词，并把教材信息拼进去。
+    // 不传模板时用九段式，行为与改造前一致。
+    final systemPrompt = buildPrompt(
+      template ?? TemplateService.defaultTemplate,
+      level,
+      courseName: courseName,
+    );
 
     // 短课堂：一次调用搞定
     if (text.length <= chunkChars) {
