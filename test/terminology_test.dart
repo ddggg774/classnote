@@ -280,5 +280,33 @@ void _locationTests() {
       expect(located.pending[1].positions.length, 1);
       expect(located.pending[2].canLocate, isFalse);
     });
+
+    test('英语课术语带中文释义，并出现在给提示词的文本里', () {
+      const term = Term(
+        term: 'cell wall',
+        definition: '细胞壁',
+        misheard: 'sell wall / cell walls',
+      );
+      final back = Term.fromJson(term.toJson());
+      expect(back.definition, '细胞壁');
+
+      final pack = TerminologyPack(
+        courseName: '大学英语',
+        terms: const [term],
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+      );
+      expect(pack.termsAsPromptText, contains('cell wall（细胞壁）'));
+      expect(pack.termsAsPromptText, contains('常见误听'));
+    });
+
+    test('中文课术语不带释义时提示词格式不变', () {
+      const term = Term(term: '木兰科', misheard: '木兰棵');
+      final text = TerminologyPack(
+        terms: const [term],
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+      ).termsAsPromptText;
+      expect(text, contains('- 木兰科（常见误听：木兰棵）'));
+      expect(text.contains('（）'), isFalse);
+    });
   });
 }

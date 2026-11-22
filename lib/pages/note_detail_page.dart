@@ -500,6 +500,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         level: _level,
         // 用结构化课程名，老笔记自动回退 title
         courseName: _note!.effectiveCourse,
+        language: _note!.language,
         template: _template,
       );
       final summaryJson = result.encode();
@@ -1398,6 +1399,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         topic: topic,
         material: material,
         knownTerms: known,
+        language: note.language,
       );
       final updated =
           note.copyWith(terminologyJson: pack.encode());
@@ -1508,7 +1510,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     setState(() => _correcting = true);
     try {
       final rawReport =
-          await _corrector.calibrate(original, pack: _terms);
+          await _corrector.calibrate(original,
+              pack: _terms, language: _note?.language ?? 'zh');
       // 用「纠错前的原文」定位，不能用 annotatedText——
       // 后者插了 〔改：…〕 之类的标注，偏移量和用户看到的对不上。
       final report = rawReport.withLocations(original);

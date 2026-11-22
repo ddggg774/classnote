@@ -367,6 +367,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                 ? _course!.trim()
                 : title,
             chapter: _location.chapterKey,
+            language: widget.mode.languageCode,
             level: options.level,
             existingTranscript: text,
             wantMindMap: options.wantMindMap,
@@ -972,8 +973,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                           border: Border.all(color: Colors.teal.shade100),
                         ),
                         child: Text(
-                          '英语课：识别语言由模型自动判断，转写后会自动给出逐句中文对照。\n'
-                          '纠错/总结的英语适配仍在完善中，现阶段以「转写 + 对照」为主。',
+                          '英语课：识别语言由模型自动判断，转写后会自动给出逐句中文对照，'
+                          '术语按「英文（中文释义）」整理。',
                           style: TextStyle(
                               fontSize: 11.5,
                               height: 1.4,

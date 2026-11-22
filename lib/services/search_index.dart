@@ -26,6 +26,9 @@ class IndexField {
   static const String summary = 'summary';
   static const String transcript = 'transcript';
 
+  /// 英语课的中文译文（与 transcript 同权重），让中文关键词也能搜到外语笔记
+  static const String translation = 'translation';
+
   static int weightOf(String field) {
     switch (field) {
       case title:
@@ -33,6 +36,7 @@ class IndexField {
       case summary:
         return 2;
       case transcript:
+      case translation:
       default:
         return 1;
     }
@@ -76,12 +80,16 @@ class IndexDoc {
   final String transcript;
   final String summary;
 
+  /// 英语课的中文译文（中文笔记为空）
+  final String translation;
+
   const IndexDoc({
     required this.noteId,
     required this.title,
     this.course = '',
     required this.transcript,
     this.summary = '',
+    this.translation = '',
   });
 }
 
@@ -201,6 +209,7 @@ class SearchIndex {
     addField(IndexField.title, doc.title);
     addField(IndexField.summary, doc.summary);
     addField(IndexField.transcript, doc.transcript);
+    addField(IndexField.translation, doc.translation);
     await batch.commit(noResult: true);
   }
 

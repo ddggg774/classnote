@@ -64,6 +64,33 @@ class CorrectionAgent {
     TerminologyStore? store,
   }) : _store = store;
 
+  /// 英语课的纠错提示词：只许修拼写/专名/同音，禁止翻译与改写。
+  /// 中文课仍走上面的 [systemPrompt]，一个字不改。
+  static const String englishSystemPrompt = '''
+你是「英语课」录音转写的术语纠错子 Agent。你的唯一职责是修正英语转写里被听错的词。
+
+## 工作方式（必须真的调用工具）
+1. lookup_terminology(course, chapter) —— 先查本节课术语表
+2. flag_uncertain(span, candidates) —— 拿不准的标出来
+3. mark_missing(context) —— 明显缺词时标出位置
+
+## 允许的修改（仅三类）
+A. 明显拼写错误：recieve → receive
+B. 专有名词大小写/连字符：darwin → Darwin
+C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
+
+## 严禁
+- 把英文翻译成中文；不许新增原文没有的汉字（原文本身的中文解释保留）
+- 改写句子结构、删减内容、润色、合并句子
+- 把术语换成同义词
+
+## 拿不准
+保留原文，调用 flag_uncertain 标注候选。宁可标待确认，不要猜。
+
+## 输出
+先给一段简短的纠错报告（改了什么、哪些待确认），不要重复贴全文。
+''';
+
   /// 系统提示词：把之前定好的 A/B/C 三档规则原样写死在代码里。
   /// 这不是给用户看的说明，是给模型的硬约束。
   static const String systemPrompt = '''
@@ -110,7 +137,7 @@ class CorrectionAgent {
 ''';
 
   /// 组装工具集。每次运行新建，绑定到本次的 session。
-  ToolRegistry _buildTools(CorrectionSession session) {
+  ToolRegistry _buildTools(CorrectionSession session, {String language = 'zh'}) {
     return ToolRegistry([
       AgentTool(
         name: 'lookup_terminology',
@@ -148,6 +175,7 @@ class CorrectionAgent {
                 // 教材名/编者/出版社一起带上：模型知道是哪本书的哪一版，
                 // 才能按那套术语体系去猜误听词，而不是泛泛给"这门课的术语"
                 material: AppConfig.textbookLine(course),
+                language: language,
               );
               session.pack = pack;
               // 生成成功后写缓存，下次同章节直接读
@@ -246,13 +274,14 @@ class CorrectionAgent {
     required String chapter,
     void Function(AgentStep step)? onStep,
     int maxSteps = 5,
+    String language = 'zh',
   }) async {
     final session = CorrectionSession();
     final loop = AgentLoop(
       apiKey: apiKey,
-      tools: _buildTools(session),
+      tools: _buildTools(session, language: language),
       config: AgentConfig(
-        systemPrompt: systemPrompt,
+        systemPrompt: language == 'en' ? englishSystemPrompt : systemPrompt,
         maxSteps: maxSteps,
         // 纠错要保守，温度压低，避免顺手润色
         temperature: 0.1,

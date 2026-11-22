@@ -66,6 +66,18 @@ void main() {
       expect(hits.first.score, greaterThan(0));
     });
 
+    test('英语课译文进索引：中文关键词能搜到英文笔记', () async {
+      await index.indexDoc(const IndexDoc(
+        noteId: 'en1',
+        title: 'English class',
+        transcript: 'Plants have cell walls.',
+        translation: '植物有细胞壁。',
+      ));
+      final hits = await index.searchRaw('细胞壁');
+      expect(hits.length, 1);
+      expect(hits.first.noteId, 'en1');
+    });
+
     test('标题命中权重高于原文命中', () async {
       await index.indexDoc(const IndexDoc(
         noteId: 'titleHit',

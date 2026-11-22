@@ -264,10 +264,32 @@ mark 只能是 key/hard/pitfall/exam/unconfirmed/quote/none。
     return '\n## 教材\n$line\n（术语与章节体系以该教材为准；不确定的内容仍要标待确认，不许凭空补）\n';
   }
 
+  /// 英语课总结的语言约束。中文课不拼这段，保证提示词逐字不变。
+  static const String _englishSummaryBlock = '''
+## 语言要求（英语课）
+- 输入是英语课堂转写，可能夹着老师用中文做的解释
+- 总结正文一律用简体中文，不要整篇写成英文
+- 专业术语第一次出现写成「中文（English）」，例如：细胞壁（cell wall）
+- 老师用中文说的话原样保留，写成「老师说：…」
+- 引用原文时保留英文原句，不要翻译后再引用
+''';
+
+  static String _withLanguage(String prompt, String language) =>
+      language == 'en' ? '$prompt\n$_englishSummaryBlock' : prompt;
+
   /// 按档位组装主提示词。
   /// 三档的差异只在「保留哪些章节」+「是否要原文引证」，不按字数裁剪——
   /// 按字数会逼模型注水或删干货。
   static String buildPromptForLevel(
+    SummaryLevel level, {
+    String courseName = '',
+    String language = 'zh',
+  }) {
+    final base = _buildPromptForLevelBase(level, courseName: courseName);
+    return _withLanguage(base, language);
+  }
+
+  static String _buildPromptForLevelBase(
     SummaryLevel level, {
     String courseName = '',
   }) {
@@ -340,13 +362,24 @@ $textbook
     NoteTemplate template,
     SummaryLevel level, {
     String courseName = '',
+    String language = 'zh',
+  }) {
+    final base = _buildPromptBase(template, level, courseName: courseName);
+    return _withLanguage(base, language);
+  }
+
+  static String _buildPromptBase(
+    NoteTemplate template,
+    SummaryLevel level, {
+    String courseName = '',
   }) {
     switch (template.id) {
       case BuiltinTemplate.general:
-        return buildPromptForLevel(level, courseName: courseName);
+        return _buildPromptForLevelBase(level, courseName: courseName);
       case BuiltinTemplate.brief:
         // 速览模板本身就是「brief 档那三节」，档位再叠加没有意义
-        return buildPromptForLevel(SummaryLevel.brief, courseName: courseName);
+        return _buildPromptForLevelBase(SummaryLevel.brief,
+            courseName: courseName);
       default:
         return _buildFromTemplate(template, level, courseName: courseName);
     }
@@ -420,20 +453,24 @@ $textbook
   }
 
   /// 分块整理用的提示词（长课堂才有），带上教材信息
-  static String buildChunkPrompt({String courseName = ''}) {
+  static String buildChunkPrompt({
+    String courseName = '',
+    String language = 'zh',
+  }) {
     final textbook = _textbookBlock(courseName);
-    if (textbook.isEmpty) return _chunkSystemPrompt;
-    return '$textbook\n$_chunkSystemPrompt';
+    final base = textbook.isEmpty ? _chunkSystemPrompt : '$textbook\n$_chunkSystemPrompt';
+    return _withLanguage(base, language);
   }
 
   /// 合并用的提示词（长课堂才有），带上教材信息
   static String buildMergePrompt(
     SummaryLevel level, {
     String courseName = '',
+    String language = 'zh',
   }) {
     final textbook = _textbookBlock(courseName);
-    if (textbook.isEmpty) return _mergeSystemPrompt;
-    return '$textbook\n$_mergeSystemPrompt';
+    final base = textbook.isEmpty ? _mergeSystemPrompt : '$textbook\n$_mergeSystemPrompt';
+    return _withLanguage(base, language);
   }
 
   /// 通用补全：给一段 system + user，要回一段文本。
@@ -537,6 +574,7 @@ $textbook
     SummaryLevel level = SummaryLevel.normal,
     String courseName = '',
     NoteTemplate? template,
+    String language = 'zh',
   }) async {
     final text = transcript.trim();
     if (text.length < 10) {
@@ -555,6 +593,7 @@ $textbook
       template ?? TemplateService.defaultTemplate,
       level,
       courseName: courseName,
+      language: language,
     );
 
     // 短课堂：一次调用搞定
@@ -569,7 +608,7 @@ $textbook
     for (var i = 0; i < chunks.length; i++) {
       final part = await _chat(
         apiKey,
-        buildChunkPrompt(courseName: courseName),
+        buildChunkPrompt(courseName: courseName, language: language),
         '这是同一节课转写稿的第 ${i + 1}/${chunks.length} 段：\n\n${chunks[i]}',
       );
       partials.add(part);
@@ -577,7 +616,7 @@ $textbook
 
     final merged = await _chat(
       apiKey,
-      buildMergePrompt(level, courseName: courseName),
+      buildMergePrompt(level, courseName: courseName, language: language),
       partials
           .asMap()
           .entries

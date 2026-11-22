@@ -50,6 +50,9 @@ class ClassroomRequest {
   /// 走 Agent 路径也必须带上，否则「一键处理」和详情页生成的笔记格式不一致。
   final NoteTemplate? template;
 
+  /// 课堂语言：`zh`（默认）或 `en`。英语课走独立的纠错/总结提示词。
+  final String language;
+
   const ClassroomRequest({
     required this.courseName,
     required this.chapter,
@@ -58,6 +61,7 @@ class ClassroomRequest {
     this.audioChunks = const [],
     this.wantMindMap = true,
     this.template,
+    this.language = 'zh',
   });
 
   bool get hasTranscript =>
@@ -215,6 +219,7 @@ class ClassroomAgent {
 
     final task = StringBuffer()
       ..writeln('课程：${request.courseName}')
+      ..writeln('课堂语言：${request.language == 'en' ? '英语' : '中文'}')
       ..writeln('章节：${request.chapter}')
       ..writeln('详细度要求：${request.level.code}（${request.level.label}）')
       ..writeln('是否已有转写稿：${request.hasTranscript ? '是' : '否'}')
@@ -369,6 +374,7 @@ class ClassroomAgent {
             text,
             course: course,
             chapter: chapter,
+            language: request.language,
           );
 
           // 纠错的正文改动体现在 summary 里（含 〔改：原→正〕 标注），
@@ -430,6 +436,7 @@ class ClassroomAgent {
               text,
               level: level,
               courseName: course,
+              language: request.language,
               // 模板没传就按课程推荐，保证与详情页一致
               template: request.template ??
                   TemplateService.recommendFor(course),

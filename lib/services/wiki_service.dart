@@ -22,6 +22,7 @@ import '../models/note.dart';
 import '../models/study_note.dart';
 import '../models/wiki_entry.dart';
 import 'db_service.dart';
+import 'translation_service.dart';
 
 class WikiService {
   final DbService _db;
@@ -443,8 +444,11 @@ variants 填别称、常见误听写法（可空数组）；related 填关联词
   Future<String> _buildInput(Note note) async {
     final b = StringBuffer()
       ..writeln('课程：${note.effectiveCourse}')
-      ..writeln('笔记标题：${note.title}')
-      ..writeln();
+      ..writeln('笔记标题：${note.title}');
+    if (note.isEnglish) {
+      b.writeln('课堂语言：英语。词条名（term）用英文原文，定义（definition）用中文。');
+    }
+    b.writeln();
 
     // 把这个课程已有的词条名告诉模型，让它优先复用而不是造近义词。
     // 这是缓解"同义不同名"的第二道防线（第一道是 hasExtracted 直接跳过）。
@@ -468,6 +472,19 @@ variants 填别称、常见误听写法（可空数组）；related 填关联词
             : summary.detailMarkdown)
         ..writeln();
     }
+    final translation = TranslationResult.tryDecode(note.translationJson);
+    if (translation != null) {
+      final zh = translation.pairs.map((p) => p.target).join('\n');
+      if (zh.trim().isNotEmpty) {
+        b
+          ..writeln('【中文译文（对照材料；术语名以英文原文为准）】')
+          ..writeln(zh.length > maxInputChars ~/ 2
+              ? '${zh.substring(0, maxInputChars ~/ 2)}…'
+              : zh)
+          ..writeln();
+      }
+    }
+
     final t = note.transcript;
     b
       ..writeln('【课堂转写原文】')

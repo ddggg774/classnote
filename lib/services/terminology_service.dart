@@ -76,12 +76,24 @@ class TerminologyService {
 - 只输出 JSON，不要任何解释文字或 Markdown 围栏
 ''';
 
+  static const String _englishRules = '''
+## 英语课额外要求（覆盖上面的中文规则）
+- term 必须写英文原文（如 cell wall），不要写中文术语
+- 每条术语必须额外给 definition 字段：中文释义，不超过 20 字
+- misheard 用英文的形近/音近形式（如 sell wall / cell walls），不要套拼音规则
+- initialPrompt 里用英文术语连成短句
+- 输出结构仍为 {"terms":[{"term":"...","definition":"...","misheard":"...","level":"high"}],"initialPrompt":"...","riskHints":[...]}
+''';
+
   /// 生成术语包。失败抛 Exception。
+  ///
+  /// [language] 为 `en` 时按英语课规则生成：术语英文原文 + 中文释义。
   Future<TerminologyPack> prepare({
     required String courseName,
     String topic = '',
     String material = '',
     String knownTerms = '',
+    String language = 'zh',
   }) async {
     final apiKey = apiKeyOverride ?? await _settings.getApiKey();
     if (apiKey.isEmpty) {
@@ -90,6 +102,7 @@ class TerminologyService {
 
     final userMessage = StringBuffer()
       ..writeln('课程名：$courseName')
+      ..writeln('课堂语言：${language == 'en' ? '英语' : '中文'}')
       ..writeln('章节主题：$topic')
       ..writeln('教材/PPT 标题：$material');
     if (knownTerms.trim().isNotEmpty) {
@@ -108,7 +121,7 @@ class TerminologyService {
             body: jsonEncode({
               'model': AppConfig.deepSeekModel,
               'messages': [
-                {'role': 'system', 'content': _systemPrompt},
+                {'role': 'system', 'content': language == 'en' ? '$_systemPrompt\n$_englishRules' : _systemPrompt},
                 {'role': 'user', 'content': userMessage.toString()},
               ],
               'response_format': {'type': 'json_object'},

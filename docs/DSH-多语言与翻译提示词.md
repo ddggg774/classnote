@@ -305,13 +305,20 @@ Future<TranslationResult> translate({
 
 验证：`flutter analyze` 0 告警；`flutter test` **403 通过 + 29 跳过**；新增测试 27 例（切句 12、翻译校验 7、语言字段 8）。
 
-### 未做（阶段 4–5，下一步）
+### 阶段 4–5 交付（2026-11-22，v1.3.0）
 
-1. **纠错提示词的英语分支 + 跨语言改写护栏**——现在英语课点「一键处理」仍走中文纠错规则，有把英文改坏的风险；**在阶段 4 完成前，英语课建议先不要点一键处理**
-2. 术语表英文原文 + 中文释义
-3. 总结提示词带 `language`（术语格式 `cell wall（细胞壁）`）
-4. 译文进检索索引、Wiki 英文术语
-5. 真实英语课录音实测（识别质量、混说、翻译质量）
+| 项 | 落地 |
+|---|---|
+| 英语纠错 | `CorrectionAgent.englishSystemPrompt` + `TranscriptCorrector._englishSystemPrompt`：只许拼写/专名/同音，禁止翻译与改写；语言经 `ClassroomRequest.language` / `note.language` 传下去 |
+| 术语 | `Term.definition`（中文释义）；英语课 `prepare(language:'en')` 追加英文规则：term 英文、definition 中文、误听按英文音近 |
+| 总结 | `AiService` 的 `buildPromptForLevel / buildPrompt / buildChunkPrompt / buildMergePrompt / summarize` 增加 `language`；英语课追加「语言要求」块（中文正文、`cell wall（细胞壁）`、保留「老师说：」） |
+| 检索 | `IndexDoc.translation` + `IndexField.translation`：译文进索引，中文关键词能搜到英语课笔记（含增量与 rebuildAll 两条路径） |
+| Wiki | 抽取输入带译文与「英语课：term 用英文原文」提示 |
+| 兼容 | 中文课提示词逐字未变；`english_prompt_test` 断言中文课不含英语块 |
+
+验证：`flutter analyze` 0 告警；`flutter test` **412 通过 + 29 跳过**（新增 9 例：英语提示词 5、术语释义 2、译文检索 1、假服务签名 1）。
+
+**仍待做**：真机拍一段英语课实测识别质量与混说场景；其他语言（日/韩/俄）不在本版。
 
 ## 五、一句话
 

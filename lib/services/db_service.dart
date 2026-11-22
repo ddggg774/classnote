@@ -15,6 +15,7 @@ import '../models/note.dart';
 import '../models/note_template.dart';
 import '../models/study_note.dart';
 import 'search_index.dart';
+import 'translation_service.dart';
 
 class DbService {
   // 单例：整个 App 共用一个数据库实例
@@ -381,6 +382,7 @@ class DbService {
         return;
       }
       final summary = StudySummary.tryDecode(note.summaryJson);
+      final translation = TranslationResult.tryDecode(note.translationJson);
       await _index.indexDoc(
         IndexDoc(
           noteId: note.id,
@@ -388,6 +390,9 @@ class DbService {
           course: note.effectiveCourse,
           transcript: note.transcript,
           summary: summary?.detailMarkdown ?? '',
+          translation: translation == null
+              ? ''
+              : translation.pairs.map((p) => p.target).join('\n'),
         ),
         db: db,
       );

@@ -9,6 +9,7 @@ import '../models/note.dart';
 import '../models/study_note.dart';
 import 'db_service.dart';
 import 'search_index.dart';
+import 'translation_service.dart';
 
 class SearchService {
   final DbService _db;
@@ -104,6 +105,7 @@ class SearchService {
             course: note.effectiveCourse,
             transcript: note.transcript,
             summary: _summaryOf(note),
+            translation: _translationOf(note),
           ),
           db: db,
         );
@@ -129,5 +131,12 @@ class SearchService {
   static String _summaryOf(Note note) {
     final parsed = StudySummary.tryDecode(note.summaryJson);
     return parsed?.detailMarkdown ?? '';
+  }
+
+  /// 英语课的译文也进索引：中文关键词才能搜到外语笔记
+  static String _translationOf(Note note) {
+    final parsed = TranslationResult.tryDecode(note.translationJson);
+    if (parsed == null) return '';
+    return parsed.pairs.map((p) => p.target).join('\n');
   }
 }

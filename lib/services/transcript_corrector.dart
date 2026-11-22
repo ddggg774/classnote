@@ -82,12 +82,47 @@ class TranscriptCorrector {
 - usability：只有质量过低（大量乱码/整句无法判断）时才填，否则必须是空字符串
 ''';
 
+  /// 英语课校准提示词：只修听写错误，禁止翻译与改写。
+  /// 输出结构与中文版完全一致，解析代码不用分叉。
+  static const String _englishSystemPrompt = '''
+你是「英语课」录音转写的校准层。输入是远场拾音的英语课堂转写，任务是**用最小改动**修正听写错误。
+
+## 允许的修改（只有三类）
+A. 明显拼写错误：recieve → receive
+B. 专有名词大小写/连字符：darwin → Darwin，cellwall → cell wall
+C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
+   改完在该句末尾标 〔改：原→正〕
+
+## 严禁
+- 把英文翻译成中文；不许新增原文没有的汉字（原文本身的中文解释保留）
+- 改写句子结构、删减内容、润色语法、合并句子
+- 把术语换成同义词
+- 用中文同音字规则去"纠正"英文
+
+## 拿不准
+保留原文，在词后标 〔疑似：候选1 / 候选2，待确认〕，不要猜。
+句子明显缺词时标 〔此处可能缺失：…〕，不要补全。
+
+## 输出 JSON（严格，不要任何多余文字）
+{
+  "annotatedText": "校准后的全文，保留 〔改：原→正〕 / 〔疑似：…〕 / 〔此处可能缺失：…〕 标注",
+  "hits": [{"term":"命中的术语","corrected":true,"occurrences":2}],
+  "missedTerms": ["术语表里有但完全没出现的术语"],
+  "pending": [{"snippet":"原文片段","candidates":["候选1","候选2"],"count":1}],
+  "micAdvice": ["针对本节暴露的拾音建议"],
+  "usability": "仅当质量过低时填写，否则空字符串"
+}
+''';
+
   /// 主入口：对整篇转写做校准。
   /// [text] 转写原文；[pack] 课前术语包（可为空，此时只按音素做保守修正）。
   Future<CalibrationReport> calibrate(
     String text, {
     TerminologyPack? pack,
+    String language = 'zh',
   }) async {
+    final systemPrompt =
+        language == 'en' ? _englishSystemPrompt : _systemPrompt;
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
       return const CalibrationReport(annotatedText: '');
@@ -107,7 +142,7 @@ class TranscriptCorrector {
 
     // 短文本一次处理；长文本分块
     if (trimmed.length <= chunkChars) {
-      return _calibrateChunk(apiKey, trimmed, termBlock, promptBlock);
+      return _calibrateChunk(apiKey, trimmed, termBlock, promptBlock, systemPrompt);
     }
 
     final chunks = _split(trimmed);
@@ -119,7 +154,7 @@ class TranscriptCorrector {
     String? usability;
 
     for (final chunk in chunks) {
-      final r = await _calibrateChunk(apiKey, chunk, termBlock, promptBlock);
+      final r = await _calibrateChunk(apiKey, chunk, termBlock, promptBlock, systemPrompt);
       annotated.add(r.annotatedText);
       allHits.addAll(r.hits);
       allPending.addAll(r.pending);
@@ -146,6 +181,7 @@ class TranscriptCorrector {
     String chunk,
     String termBlock,
     String promptBlock,
+    String systemPrompt,
   ) async {
     final userMessage = '$termBlock\n$promptBlock\n----- 待校准转写 -----\n$chunk';
 
@@ -161,7 +197,7 @@ class TranscriptCorrector {
             body: jsonEncode({
               'model': AppConfig.deepSeekModel,
               'messages': [
-                {'role': 'system', 'content': _systemPrompt},
+                {'role': 'system', 'content': systemPrompt},
                 {'role': 'user', 'content': userMessage},
               ],
               'response_format': {'type': 'json_object'},

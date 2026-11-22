@@ -134,6 +134,7 @@ class _FakeAi extends AiService {
     SummaryLevel level = SummaryLevel.normal,
     String courseName = '',
     NoteTemplate? template,
+    String language = 'zh',
   }) async {
     callCount++;
     lastLevel = level;
@@ -156,6 +157,7 @@ class _FakeCorrector extends CorrectionAgent {
     required String chapter,
     void Function(AgentStep step)? onStep,
     int maxSteps = 5,
+    String language = 'zh',
   }) async {
     callCount++;
     return const CorrectionAgentResult(

@@ -62,22 +62,28 @@ class Term {
 
   final TermLevel level;
 
+  /// 中文释义（英语课术语用，如 cell wall → 细胞壁）。中文课留空。
+  final String definition;
+
   const Term({
     required this.term,
     this.misheard = '',
     this.level = TermLevel.mid,
+    this.definition = '',
   });
 
   factory Term.fromJson(Map<String, dynamic> json) => Term(
         term: (json['term'] ?? '').toString().trim(),
         misheard: (json['misheard'] ?? '').toString().trim(),
         level: TermLevel.fromCode(json['level']?.toString()),
+        definition: (json['definition'] ?? '').toString().trim(),
       );
 
   Map<String, dynamic> toJson() => {
         'term': term,
         if (misheard.isNotEmpty) 'misheard': misheard,
         'level': level.code,
+        if (definition.isNotEmpty) 'definition': definition,
       };
 
   /// 误听形式列表（去掉空项）
@@ -179,7 +185,11 @@ class TerminologyPack {
       if (list.isEmpty) continue;
       b.writeln('【${level.label}优先级】');
       for (final t in list) {
-        b.writeln('- ${t.term}${t.misheard.isEmpty ? '' : '（常见误听：${t.misheard}）'}');
+        final definition = t.definition.isEmpty ? '' : '（${t.definition}）';
+        b.writeln(
+          '- ${t.term}$definition'
+          '${t.misheard.isEmpty ? '' : '（常见误听：${t.misheard}）'}',
+        );
       }
     }
     return b.toString();
