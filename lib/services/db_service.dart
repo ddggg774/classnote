@@ -29,8 +29,10 @@ class DbService {
   /// v5 = notes 增加 course（结构化课程归属）与 template_id（使用的笔记模板），
   ///      新增 templates 表存用户自定义模板；
   /// v6 = 新增 search_terms 表（中文 bigram 倒排索引，用于跨笔记检索）；
-  /// v7 = 新增 wiki_entries 与 wiki_sources 表（课程级知识库词条）。
-  static const int dbVersion = 7;
+  /// v7 = 新增 wiki_entries 与 wiki_sources 表（课程级知识库词条）；
+  /// v8 = 新增 textbooks / chapters / sections 表（教材库与章节目录），
+  ///      并把 config.dart 里三本教材的元数据灌成种子（只灌一次）。
+  static const int dbVersion = 8;
 
   Database? _db;
 
@@ -89,6 +91,7 @@ class DbService {
         await _createTemplates(db);
         await SearchIndex.createTables(db);
         await _createWikiTables(db);
+        await _createTextbookTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // 逐版本迁移，每个分支独立、可重入
@@ -123,6 +126,9 @@ class DbService {
         }
         if (oldVersion < 7) {
           await _createWikiTables(db);
+        }
+        if (oldVersion < 8) {
+          await _createTextbookTables(db);
         }
       },
       ),
@@ -213,6 +219,103 @@ class DbService {
       'CREATE INDEX IF NOT EXISTS idx_wiki_source_entry '
       'ON wiki_sources(entry_id)',
     );
+  }
+
+  /// 教材库表。
+  ///
+  /// 章、节分两张表而不是一张自引用表：需求只有「章 → 节」两层，
+  /// 两张表最直白、测试也好写（代价是「篇」这一层放不下，第一版接受）。
+  /// 章号/节号存原文（「第五章」「第一节」），排序靠 sort_order，
+  /// 不解析 no——老师在课堂上说的就是「第五章」。
+  ///
+  /// 建表后顺手灌种子：config.dart 里那三本教材的元数据只在这一步写入，
+  /// 之后一切读写走数据库。只在建库/升级时执行，用户删掉的教材不会被偷偷塞回来。
+  Future<void> _createTextbookTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS textbooks (
+        id TEXT PRIMARY KEY,
+        course TEXT NOT NULL,
+        title TEXT NOT NULL,
+        edition TEXT NOT NULL DEFAULT '',
+        author TEXT NOT NULL DEFAULT '',
+        publisher TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        isbn TEXT NOT NULL DEFAULT '',
+        toc_source TEXT NOT NULL DEFAULT 'none',
+        toc_updated_at INTEGER,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_textbook_course ON textbooks(course)',
+    );
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS chapters (
+        id TEXT PRIMARY KEY,
+        textbook_id TEXT NOT NULL,
+        no TEXT NOT NULL,
+        title TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_chapter_book '
+      'ON chapters(textbook_id, sort_order)',
+    );
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sections (
+        id TEXT PRIMARY KEY,
+        chapter_id TEXT NOT NULL,
+        no TEXT NOT NULL,
+        title TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_section_chapter '
+      'ON sections(chapter_id, sort_order)',
+    );
+
+    await _seedTextbooksIfEmpty(db);
+  }
+
+  /// 空库时把 config.dart 的三本教材灌成种子。
+  ///
+  /// 只写元数据，目录标记为「未录入」——目录绝不许由程序猜，
+  /// 只能等用户手动录入或粘贴。
+  Future<void> _seedTextbooksIfEmpty(Database db) async {
+    final count = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM textbooks'),
+        ) ??
+        0;
+    if (count > 0) return;
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < AppConfig.textbooks.length; i++) {
+      final t = AppConfig.textbooks[i];
+      final m = RegExp(r'[（(]([^）)]*版)[）)]').firstMatch(t.book);
+      await db.insert(
+        'textbooks',
+        {
+          'id': 'textbook-seed-$i',
+          'course': t.course,
+          'title': t.book,
+          'edition': m?.group(1) ?? '',
+          'author': t.author,
+          'publisher': t.publisher,
+          'year': '',
+          'isbn': '',
+          'toc_source': 'none',
+          'toc_updated_at': null,
+          'sort_order': i,
+          'created_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
   }
 
   /// 加列前先查 PRAGMA table_info，保证迁移可重复执行（避免重复 ALTER 抛错）

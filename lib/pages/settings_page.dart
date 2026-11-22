@@ -7,6 +7,7 @@ import '../config.dart';
 import '../services/audio_capture_profile.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
+import 'textbook_list_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -403,6 +404,35 @@ class _SettingsPageState extends State<SettingsPage> {
                         onChanged: (v) => setState(
                             () => _skillEnabled[skill.id] = v),
                       )),
+                const SizedBox(height: 16),
+
+                // 教材库：录音前定位章节的数据来源
+                const Divider(),
+                const SizedBox(height: 8),
+                const Text('教材管理',
+                    style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 2),
+                Text(
+                  '录入教材目录后，录音前可以选到「第五章 · 第二节」这种粒度，'
+                  '术语表、纠错和总结都会用上它。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('教材与章节目录',
+                      style: TextStyle(fontSize: 13.5)),
+                  subtitle: Text('程序不会自动生成章节号，只认你录入的目录',
+                      style: TextStyle(
+                          fontSize: 11.5, color: Colors.grey.shade600)),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const TextbookListPage()),
+                  ),
+                ),
                 const SizedBox(height: 16),
 
                 const Text(
