@@ -27,7 +27,13 @@ import '../widgets/mind_map_widget.dart';
 
 class NoteDetailPage extends StatefulWidget {
   final String noteId;
-  const NoteDetailPage({super.key, required this.noteId});
+
+  /// 从搜索结果点进来时要定位的字符偏移（-1 表示不定位）。
+  /// 定位后自动切到「原文」Tab 并选中该处，
+  /// 否则用户点搜索结果进来还得自己翻找。
+  final int initialOffset;
+
+  const NoteDetailPage({super.key, required this.noteId, this.initialOffset = -1});
 
   @override
   State<NoteDetailPage> createState() => _NoteDetailPageState();

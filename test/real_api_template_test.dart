@@ -12,7 +12,6 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:classnote/models/note_template.dart';
 import 'package:classnote/models/summary_level.dart';
 import 'package:classnote/services/ai_service.dart';
 import 'package:classnote/services/template_service.dart';

@@ -12,6 +12,8 @@ import 'package:path/path.dart';
 import '../config.dart';
 import '../models/note.dart';
 import '../models/note_template.dart';
+import '../models/study_note.dart';
+import 'search_index.dart';
 
 class DbService {
   // 单例：整个 App 共用一个数据库实例
@@ -24,10 +26,17 @@ class DbService {
   /// v3 = 增加 terminology_json（课前术语表）；
   /// v4 = 增加 terminology_cache 表（按课程+章节缓存术语表，避免重复生成）；
   /// v5 = notes 增加 course（结构化课程归属）与 template_id（使用的笔记模板），
-  ///      新增 templates 表存用户自定义模板。
-  static const int dbVersion = 5;
+  ///      新增 templates 表存用户自定义模板；
+  /// v6 = 新增 search_terms 表（中文 bigram 倒排索引，用于跨笔记检索）。
+  static const int dbVersion = 6;
 
   Database? _db;
+
+  /// 检索索引。所有写笔记的入口都会同步更新它，
+  /// 保证「搜得到的一定在库里、删掉的一定搜不到」。
+  late final SearchIndex _index = SearchIndex(() => _db!);
+
+  SearchIndex get index => _index;
 
   /// 打开（或创建）数据库
   Future<Database> get database async {
@@ -54,6 +63,7 @@ class DbService {
         ''');
         await _createTerminologyCache(db);
         await _createTemplates(db);
+        await SearchIndex.createTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // 逐版本迁移，每个分支独立、可重入
@@ -82,6 +92,9 @@ class DbService {
           await _addColumnIfMissing(db, 'notes', 'course', 'TEXT');
           await _addColumnIfMissing(db, 'notes', 'template_id', 'TEXT');
           await _createTemplates(db);
+        }
+        if (oldVersion < 6) {
+          await SearchIndex.createTables(db);
         }
       },
     );
@@ -140,6 +153,33 @@ class DbService {
     // uuid 理论上不会撞；万一重复（例如草稿转正时重复插入），用 replace 覆盖而不是抛错
     await db.insert('notes', note.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+    await _syncIndex(note, db);
+  }
+
+  /// 把一条笔记同步进检索索引。
+  ///
+  /// 索引失败不该让保存笔记失败（那样用户会丢数据），
+  /// 所以这里吞掉异常——最坏情况只是搜不到这篇，
+  /// 用户可以在搜索页点「重建索引」修好。
+  Future<void> _syncIndex(Note note, Database db) async {
+    try {
+      // 草稿不索引：内容还在变，索引它只会让搜索结果里出现半截笔记
+      if (note.isDraft) {
+        await _index.removeDoc(note.id, db: db);
+        return;
+      }
+      final summary = StudySummary.tryDecode(note.summaryJson);
+      await _index.indexDoc(
+        IndexDoc(
+          noteId: note.id,
+          title: note.title,
+          course: note.effectiveCourse,
+          transcript: note.transcript,
+          summary: summary?.detailMarkdown ?? '',
+        ),
+        db: db,
+      );
+    } catch (_) {}
   }
 
   /// 查询全部笔记，按创建时间倒序（最新的在前）。
@@ -174,12 +214,16 @@ class DbService {
   Future<void> update(Note note) async {
     final db = await database;
     await db.update('notes', note.toMap(), where: 'id = ?', whereArgs: [note.id]);
+    await _syncIndex(note, db);
   }
 
   /// 删除一条笔记
   Future<void> delete(String id) async {
     final db = await database;
     await db.delete('notes', where: 'id = ?', whereArgs: [id]);
+    try {
+      await _index.removeDoc(id, db: db);
+    } catch (_) {}
   }
 
   /// 清掉一天前创建、既没有标题也没有正文的空白草稿
