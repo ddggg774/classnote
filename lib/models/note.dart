@@ -37,6 +37,13 @@ class Note {
   final String? sectionNo;
   final String? sectionTitle;
 
+  /// 课堂语言（v10）。`zh` 默认，英语课为 `en`。
+  /// 老笔记读出来一律按 zh，不迁移数据。
+  final String language;
+
+  /// 英语课的逐句译文（TranslationResult 的 JSON），中文笔记永远是 null。
+  final String? translationJson;
+
   Note({
     required this.id,
     required this.title,
@@ -53,10 +60,15 @@ class Note {
     this.chapterTitle,
     this.sectionNo,
     this.sectionTitle,
+    this.language = 'zh',
+    this.translationJson,
   });
 
   /// 是否已生成总结
   bool get hasSummary => summaryJson != null && summaryJson!.isNotEmpty;
+
+  /// 是不是英语课笔记。翻译只对这类笔记启用。
+  bool get isEnglish => language == 'en';
 
   /// 实际用于匹配课程的名字：优先 course，老笔记回退 title。
   /// 所有需要「课程」的地方都应该读这个，而不是直接用 title。
@@ -113,6 +125,9 @@ class Note {
       chapterTitle: map['chapter_title'] as String?,
       sectionNo: map['section_no'] as String?,
       sectionTitle: map['section_title'] as String?,
+      // v10 之前的老库没有这两列，缺列时按中文课处理
+      language: (map['language'] as String?) ?? 'zh',
+      translationJson: map['translation_json'] as String?,
     );
   }
 
@@ -134,6 +149,8 @@ class Note {
       'chapter_title': chapterTitle,
       'section_no': sectionNo,
       'section_title': sectionTitle,
+      'language': language,
+      'translation_json': translationJson,
     };
   }
 
@@ -161,6 +178,9 @@ class Note {
     String? sectionTitle,
     bool clearLocation = false,
     bool clearPosition = false,
+    String? language,
+    String? translationJson,
+    bool clearTranslation = false,
   }) {
     return Note(
       id: id,
@@ -186,6 +206,10 @@ class Note {
       sectionTitle: (clearLocation || clearPosition)
           ? null
           : (sectionTitle ?? this.sectionTitle),
+      language: language ?? this.language,
+      translationJson: clearTranslation
+          ? null
+          : (translationJson ?? this.translationJson),
     );
   }
 }

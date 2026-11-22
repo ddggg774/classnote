@@ -15,6 +15,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:uuid/uuid.dart';
 
 import '../agent/classroom_agent.dart';
+import '../models/class_mode.dart';
 import '../models/course_location.dart';
 import '../models/mind_graph.dart';
 import '../config.dart';
@@ -33,10 +34,13 @@ import '../widgets/agent_run_sheet.dart';
 import '../widgets/location_picker.dart';
 
 class RecordPage extends StatefulWidget {
-  const RecordPage({super.key, this.draftId});
+  const RecordPage({super.key, this.draftId, this.mode = ClassMode.chinese});
 
   /// 传入草稿 ID 时表示「继续编辑一条未完成的笔记」
   final String? draftId;
+
+  /// 普通课堂 / 英语课。英语课只换入口、标题与语言，录音引擎完全复用。
+  final ClassMode mode;
 
   @override
   State<RecordPage> createState() => _RecordPageState();
@@ -174,6 +178,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         chapterTitle: _chapter?.title,
         sectionNo: _section?.no,
         sectionTitle: _section?.title,
+        language: widget.mode.languageCode,
       ));
     } else {
       final existing = await _db.queryById(_draftId!);
@@ -194,6 +199,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         clearPosition: _chapter == null,
         // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
         clearCourse: (_course ?? '').trim().isEmpty,
+        language: widget.mode.languageCode,
       ));
     }
     _lastSavedTranscript = text;
@@ -495,6 +501,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         clearPosition: _chapter == null,
         // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
         clearCourse: (_course ?? '').trim().isEmpty,
+        language: widget.mode.languageCode,
       ));
     } else {
       // 草稿为空（用户直接贴文本进来）或者处理期间被别处删掉了：
@@ -513,6 +520,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         chapterTitle: _chapter?.title,
         sectionNo: _section?.no,
         sectionTitle: _section?.title,
+        language: widget.mode.languageCode,
       ));
     }
 
@@ -641,6 +649,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           clearPosition: _chapter == null,
           // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
           clearCourse: (_course ?? '').trim().isEmpty,
+        language: widget.mode.languageCode,
         ));
       }
     } else {
@@ -657,6 +666,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         chapterTitle: _chapter?.title,
         sectionNo: _section?.no,
         sectionTitle: _section?.title,
+        language: widget.mode.languageCode,
       ));
     }
     if (mounted) Navigator.of(context).pop();
@@ -927,7 +937,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
             }
           },
           child: Scaffold(
-            appBar: AppBar(title: const Text('新建课堂记录')),
+            appBar: AppBar(title: Text(widget.mode.appBarTitle)),
             body: SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -949,6 +959,28 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                     const SizedBox(height: 8),
                     _buildLocationBar(),
                     const SizedBox(height: 12),
+
+                    if (widget.mode.translates) ...[
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.teal.shade100),
+                        ),
+                        child: Text(
+                          '英语课：识别语言由模型自动判断，转写后会自动给出逐句中文对照。\n'
+                          '纠错/总结的英语适配仍在完善中，现阶段以「转写 + 对照」为主。',
+                          style: TextStyle(
+                              fontSize: 11.5,
+                              height: 1.4,
+                              color: Colors.teal.shade800),
+                        ),
+                      ),
+                    ],
 
                     if (recording || _recognizing || p.failedSegments > 0)
                       _buildStatusBar(p),

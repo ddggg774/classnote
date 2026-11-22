@@ -3,6 +3,7 @@
 // 顶部会把「未完成的草稿」单独提出来，方便崩溃/误退后继续记录。
 import 'package:material_ui/material_ui.dart';
 
+import '../models/class_mode.dart';
 import '../models/note.dart';
 import '../services/db_service.dart';
 import 'record_page.dart';
@@ -67,10 +68,26 @@ class _HomePageState extends State<HomePage> {
     await _loadNotes();
   }
 
-  /// 继续编辑一条草稿
-  Future<void> _continueDraft(String id) async {
+  /// 英语课：独立入口。语言固定 en，转写后自动逐句翻译。
+  /// 普通「新建课堂」不会走这条路，中文链路一行不改。
+  Future<void> _goToEnglishClass() async {
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => RecordPage(draftId: id)),
+      MaterialPageRoute(
+        builder: (_) => const RecordPage(mode: ClassMode.english),
+      ),
+    );
+    await _loadNotes();
+  }
+
+  /// 继续编辑一条草稿（英语课草稿要回到英语课形态，否则语言会被写成 zh）
+  Future<void> _continueDraft(Note note) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RecordPage(
+          draftId: note.id,
+          mode: note.isEnglish ? ClassMode.english : ClassMode.chinese,
+        ),
+      ),
     );
     await _loadNotes();
   }
@@ -150,10 +167,27 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                 ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _goToRecord,
-        icon: const Icon(Icons.mic),
-        label: const Text('新建课堂'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // 英语课：主按钮旁的次级按钮。只有从这里进才用翻译。
+          FloatingActionButton.extended(
+            heroTag: 'english-class',
+            onPressed: _goToEnglishClass,
+            backgroundColor: Colors.teal.shade50,
+            foregroundColor: Colors.teal.shade800,
+            icon: const Icon(Icons.translate, size: 18),
+            label: const Text('英语课', style: TextStyle(fontSize: 13)),
+          ),
+          const SizedBox(height: 10),
+          FloatingActionButton.extended(
+            heroTag: 'new-class',
+            onPressed: _goToRecord,
+            icon: const Icon(Icons.mic),
+            label: const Text('新建课堂'),
+          ),
+        ],
       ),
     );
   }
@@ -233,7 +267,7 @@ class _HomePageState extends State<HomePage> {
         ),
         onTap: () async {
           if (isDraft) {
-            await _continueDraft(note.id);
+            await _continueDraft(note);
           } else {
             await Navigator.of(context).push(
               MaterialPageRoute(

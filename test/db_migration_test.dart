@@ -109,6 +109,18 @@ void main() {
     expect(note.chapterKey, '');
   });
 
+  test('升级到 v10 后 notes 有 language / translation_json，老笔记默认 zh', () async {
+    final db = await DbService().database;
+    final info = await db.rawQuery('PRAGMA table_info(notes)');
+    final columns = info.map((r) => r['name']).toSet();
+    expect(columns, containsAll(['language', 'translation_json']));
+
+    final note = await DbService().queryById('old-note');
+    expect(note!.language, 'zh');
+    expect(note.isEnglish, isFalse);
+    expect(note.translationJson, isNull);
+  });
+
   test('升级后教材三表建好并灌入三本种子', () async {
     final service = TextbookService();
     final all = await service.listAll();

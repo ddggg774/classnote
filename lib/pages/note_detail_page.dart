@@ -2,6 +2,7 @@
 // 笔记详情页：四个 Tab —— 原文（可编辑）、详细笔记（九段式 Markdown）、
 // 思维导图、大纲（结构化的要点列表）。
 // "生成总结"按钮调用 AI 服务，一次产出「详细笔记 + 思维导图结构」，存回数据库后分别渲染。
+import 'dart:async';
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
@@ -27,6 +28,7 @@ import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
 import '../services/terminology_service.dart';
 import '../services/transcript_corrector.dart';
+import '../services/translation_service.dart';
 import '../models/terminology.dart';
 import '../widgets/graph_canvas.dart';
 import '../widgets/location_picker.dart';
@@ -58,6 +60,15 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
   /// 这条笔记对应的教材位置。老笔记为空，位置块整块不渲染。
   CourseLocation _location = CourseLocation.empty;
+
+  /// 英语课的逐句译文。中文笔记永远是 null。
+  TranslationResult? _translation;
+  bool _translating = false;
+  String? _translationError;
+  Timer? _translateDebounce;
+
+  /// 上次翻译时的原文，用来判断"没改就不重复花钱"
+  String? _lastTranslatedText;
 
   /// 正在做术语准备或质量校准
   bool _correcting = false;
@@ -157,6 +168,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           TemplateService.recommendFor(note.effectiveCourse);
     });
     await _loadLocation(note);
+    _initTranslation(note);
   }
 
   /// 课程名：只有结构化 course 才算数。老笔记的 title 常是「11月22日第三讲」，
@@ -185,6 +197,94 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     );
     if (!mounted) return;
     setState(() => _location = loc);
+  }
+
+  // ───────────────────── 英语课翻译 ─────────────────────
+
+  /// 打开笔记时初始化译文：有缓存直接读；英语课且没译文就排一次自动翻译。
+  void _initTranslation(Note note) {
+    final cached = TranslationResult.tryDecode(note.translationJson);
+    _translation = cached;
+    _lastTranslatedText = cached?.pairs.map((p) => p.source).join(' ');
+    if (note.isEnglish && cached == null && note.transcript.trim().length >= 20) {
+      _scheduleTranslate();
+    }
+  }
+
+  /// 防抖 2 秒：用户连续改原文时只翻最后一次。
+  void _scheduleTranslate() {
+    final note = _note;
+    if (note == null || !note.isEnglish) return;
+    _translateDebounce?.cancel();
+    _translateDebounce = Timer(const Duration(seconds: 2), () {
+      _translateNow();
+    });
+  }
+
+  Future<void> _translateNow({bool force = false}) async {
+    final note = _note;
+    if (note == null || !note.isEnglish || _translating) return;
+    final text = _transcriptController.text.trim();
+    if (text.length < 20) {
+      if (mounted) setState(() => _translationError = '原文太短，暂不翻译');
+      return;
+    }
+    if (!force && text == _lastTranslatedText) return;
+
+    setState(() {
+      _translating = true;
+      _translationError = null;
+    });
+    try {
+      final result = await TranslationService()
+          .translate(text: text, sourceLang: note.language);
+      final updated = note.copyWith(translationJson: result.encode());
+      await _db.update(updated);
+      if (!mounted) return;
+      setState(() {
+        _note = updated;
+        _translation = result;
+        _lastTranslatedText = text;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() =>
+            _translationError = e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _translating = false);
+    }
+  }
+
+  Future<void> _openTranslation() async {
+    if (_translating) return;
+    if (_translation == null) {
+      await _translateNow(force: true);
+    }
+    if (!mounted) return;
+    if (_translation == null) {
+      _showSnack(_translationError ?? '翻译失败，稍后再试');
+      return;
+    }
+    await _showTranslationSheet(_translation!);
+  }
+
+  Future<void> _showTranslationSheet(TranslationResult result) async {
+    final selected = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _TranslationSheet(result: result),
+    );
+    if (selected == null || !mounted) return;
+    // 点某一句 → 选中原文里对应的位置
+    final pair = result.pairs.where((p) => p.index == selected).toList();
+    if (pair.isEmpty) return;
+    final offset = _transcriptController.text.indexOf(pair.first.source);
+    if (offset >= 0) {
+      _transcriptController.selection =
+          TextSelection.collapsed(offset: offset);
+    }
   }
 
   /// 事后修改位置：选错了能改回来，比重新建笔记现实得多。
@@ -420,6 +520,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         _tabIndex = 1; // 跳到「详细笔记」，这是用户真正想看的东西
       });
       _tabController.animateTo(1);
+      if (updated.isEnglish) _scheduleTranslate();
       if (result.chunked) {
         _showSnack('课堂较长，已分块整理后再合并成完整笔记');
       }
@@ -444,7 +545,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         _undoTranscript = null;
         _report = null;
       });
-      _showSnack('原文已保存');
+      _showSnack(updated.isEnglish ? '原文已保存，正在更新译文…' : '原文已保存');
+      if (updated.isEnglish) _scheduleTranslate();
     } finally {
       if (mounted) setState(() => _savingTranscript = false);
     }
@@ -494,6 +596,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
   @override
   void dispose() {
+    _translateDebounce?.cancel();
     _tabController.dispose();
     _transcriptController.dispose();
     super.dispose();
@@ -636,6 +739,29 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
           child: Column(
             children: [
+              // 英语课专属：逐句中文对照。中文笔记这里什么都不显示。
+              if (_note?.isEnglish ?? false) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.tonalIcon(
+                    onPressed: _translating ? null : _openTranslation,
+                    icon: _translating
+                        ? const SizedBox(
+                            width: 15,
+                            height: 15,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.translate, size: 17),
+                    label: Text(
+                      _translating
+                          ? '翻译中…'
+                          : (_translation == null ? '生成中文对照' : '查看中文对照'),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+              ],
               Row(
                 children: [
                   Expanded(
@@ -1001,6 +1127,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     await _db.update(updated);
     if (!mounted) return;
     setState(() => _note = updated);
+    if (updated.isEnglish) _scheduleTranslate();
   }
 
   static int _countOccurrences(String text, String snippet) {
@@ -1975,4 +2102,80 @@ class _PendingAction {
     this.jumpOnly = false,
     this.acceptAsIs = false,
   });
+}
+
+/// 英语课的中文对照面板：一句原文、一句译文，上下排列。
+/// 点某一句会把它在原文里的位置选中（返回 index 给调用方）。
+class _TranslationSheet extends StatelessWidget {
+  const _TranslationSheet({required this.result});
+
+  final TranslationResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.8;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('中文对照',
+                        style: TextStyle(
+                            fontSize: 15.5, fontWeight: FontWeight.w600)),
+                  ),
+                  Text(
+                    result.isPerSentence ? '逐句 · 点句子回到原文' : '整段翻译',
+                    style: TextStyle(
+                        fontSize: 11.5, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.separated(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                itemCount: result.pairs.length,
+                separatorBuilder: (_, __) =>
+                    Divider(height: 18, color: Colors.grey.shade200),
+                itemBuilder: (ctx, i) {
+                  final pair = result.pairs[i];
+                  return InkWell(
+                    onTap: result.isPerSentence
+                        ? () => Navigator.of(context).pop(pair.index)
+                        : null,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          pair.source,
+                          style: TextStyle(
+                              fontSize: 13.5,
+                              height: 1.5,
+                              color: Colors.grey.shade800),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          pair.target,
+                          style: TextStyle(
+                              fontSize: 14,
+                              height: 1.55,
+                              color: Colors.indigo.shade900),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

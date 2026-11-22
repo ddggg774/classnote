@@ -34,7 +34,8 @@ class DbService {
   ///      并把 config.dart 里三本教材的元数据灌成种子（只灌一次）；
   /// v9 = notes 增加五个位置字段（textbook_id / chapter_no / chapter_title /
   ///      section_no / section_title），记录这节课的教材位置。老笔记留空。
-  static const int dbVersion = 9;
+  /// v10 = notes 增加 language（zh/en，默认 zh）与 translation_json（英语课译文）。
+  static const int dbVersion = 10;
 
   Database? _db;
 
@@ -91,7 +92,9 @@ class DbService {
             chapter_no TEXT,
             chapter_title TEXT,
             section_no TEXT,
-            section_title TEXT
+            section_title TEXT,
+            language TEXT NOT NULL DEFAULT 'zh',
+            translation_json TEXT
           )
         ''');
         await _createTerminologyCache(db);
@@ -144,6 +147,16 @@ class DbService {
           await _addColumnIfMissing(db, 'notes', 'chapter_title', 'TEXT');
           await _addColumnIfMissing(db, 'notes', 'section_no', 'TEXT');
           await _addColumnIfMissing(db, 'notes', 'section_title', 'TEXT');
+        }
+        if (oldVersion < 10) {
+          // 默认 zh：老笔记都是中文课，不需要迁移数据
+          await _addColumnIfMissing(
+            db,
+            'notes',
+            'language',
+            "TEXT NOT NULL DEFAULT 'zh'",
+          );
+          await _addColumnIfMissing(db, 'notes', 'translation_json', 'TEXT');
         }
       },
       ),
