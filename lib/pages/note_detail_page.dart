@@ -15,8 +15,10 @@ import '../models/note_template.dart';
 import '../models/study_note.dart';
 import '../models/summary_level.dart';
 import '../services/db_service.dart';
+import '../services/settings_service.dart';
 import '../services/pending_fixer.dart';
 import '../services/template_service.dart';
+import '../services/wiki_service.dart';
 import '../services/ai_service.dart';
 import '../services/mind_graph_exporter.dart';
 import '../services/terminology_service.dart';
@@ -49,6 +51,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
   /// 正在做术语准备或质量校准
   bool _correcting = false;
+  bool _wikiExtracting = false;
   bool _preparing = false;
   /// 正在保存原文（防止连点）
   bool _savingTranscript = false;
@@ -327,6 +330,43 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     }
   }
 
+  /// 把这条笔记抽成知识库词条。
+  ///
+  /// 已抽过会直接被服务层跳过（不花钱），所以可以放心让用户反复点。
+  Future<void> _extractToWiki() async {
+    final note = _note;
+    if (note == null || _wikiExtracting) return;
+    if (note.isDraft) {
+      _showSnack('草稿还没有定稿，先「完成并记录」再加入知识库');
+      return;
+    }
+    if (note.effectiveCourse.trim().isEmpty) {
+      _showSnack('这条笔记没有课程名，无法归入知识库');
+      return;
+    }
+    final key = await SettingsService().getApiKey();
+    if (!mounted) return;
+    if (key.isEmpty) {
+      _showSnack('请先在「设置」里填写 DeepSeek API Key');
+      return;
+    }
+
+    setState(() => _wikiExtracting = true);
+    try {
+      final result = await WikiService(apiKeyOverride: key).extractFromNote(note);
+      if (!mounted) return;
+      _showSnack(result.isEmpty
+          ? '这条笔记已经抽过了，没有新内容'
+          : '知识库：${result.summary}');
+    } catch (e) {
+      if (mounted) {
+        _showSnack('抽取失败：${e.toString().replaceFirst('Exception: ', '')}');
+      }
+    } finally {
+      if (mounted) setState(() => _wikiExtracting = false);
+    }
+  }
+
   void _showSnack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -511,6 +551,23 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                 ],
               ),
               const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _wikiExtracting ? null : _extractToWiki,
+                  icon: _wikiExtracting
+                      ? const SizedBox(
+                          width: 15,
+                          height: 15,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.library_add_outlined, size: 17),
+                  label: Text(
+                    _wikiExtracting ? '抽取词条中…' : '加入知识库',
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ),
               Row(
                 children: [
                   Expanded(

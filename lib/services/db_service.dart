@@ -6,6 +6,7 @@
 // 数据库 version 与迁移必须成对维护：改 version 就必须在同一次提交里补 onUpgrade 分支，
 // 否则已装机用户升级后打开 App 会直接抛 "no such column" 白屏，数据还在但打不开。
 // 每个迁移必须可重复执行（IF NOT EXISTS 或先查 PRAGMA table_info），失败要能回滚到旧版本。
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -27,10 +28,31 @@ class DbService {
   /// v4 = 增加 terminology_cache 表（按课程+章节缓存术语表，避免重复生成）；
   /// v5 = notes 增加 course（结构化课程归属）与 template_id（使用的笔记模板），
   ///      新增 templates 表存用户自定义模板；
-  /// v6 = 新增 search_terms 表（中文 bigram 倒排索引，用于跨笔记检索）。
-  static const int dbVersion = 6;
+  /// v6 = 新增 search_terms 表（中文 bigram 倒排索引，用于跨笔记检索）；
+  /// v7 = 新增 wiki_entries 与 wiki_sources 表（课程级知识库词条）。
+  static const int dbVersion = 7;
 
   Database? _db;
+
+  /// 仅测试用：覆盖数据库工厂与路径。
+  ///
+  /// DbService 是单例，所有 DbService() 共享同一个 _db。
+  /// 测试里若不隔离，用例之间会互相污染数据（这是真实踩过的坑：
+  /// 一个用例建了「心皮」词条，下一个用例的冲突断言直接读到它）。
+  @visibleForTesting
+  static DatabaseFactory? factoryOverrideForTest;
+
+  @visibleForTesting
+  static String? dbPathOverrideForTest;
+
+  /// 仅测试用：关掉当前连接，让下次 database 重新打开
+  @visibleForTesting
+  Future<void> resetForTest() async {
+    try {
+      await _db?.close();
+    } catch (_) {}
+    _db = null;
+  }
 
   /// 检索索引。所有写笔记的入口都会同步更新它，
   /// 保证「搜得到的一定在库里、删掉的一定搜不到」。
@@ -41,10 +63,12 @@ class DbService {
   /// 打开（或创建）数据库
   Future<Database> get database async {
     if (_db != null) return _db!;
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, AppConfig.dbName);
-    _db = await openDatabase(
+    final factory = factoryOverrideForTest ?? databaseFactory;
+    final path = dbPathOverrideForTest ??
+        join(await getDatabasesPath(), AppConfig.dbName);
+    _db = await factory.openDatabase(
       path,
+      options: OpenDatabaseOptions(
       version: dbVersion,
       onCreate: (db, version) async {
         await db.execute('''
@@ -64,6 +88,7 @@ class DbService {
         await _createTerminologyCache(db);
         await _createTemplates(db);
         await SearchIndex.createTables(db);
+        await _createWikiTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // 逐版本迁移，每个分支独立、可重入
@@ -96,7 +121,11 @@ class DbService {
         if (oldVersion < 6) {
           await SearchIndex.createTables(db);
         }
+        if (oldVersion < 7) {
+          await _createWikiTables(db);
+        }
       },
+      ),
     );
     return _db!;
   }
@@ -132,6 +161,58 @@ class DbService {
         created_at INTEGER NOT NULL
       )
     ''');
+  }
+
+  /// 知识库表。
+  ///
+  /// wiki_entries 的 (course, term) 是唯一键：同一门课内同名视为同一词条，
+  /// 跨课程互不干扰（「心皮」在植物学和其他课里是两回事）。
+  ///
+  /// wiki_sources 的 (entry_id, note_id, snippet) 唯一：
+  /// 这保证了幂等——同一篇笔记重复抽取不会产生重复出处。
+  Future<void> _createWikiTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS wiki_entries (
+        id TEXT PRIMARY KEY,
+        course TEXT NOT NULL,
+        term TEXT NOT NULL,
+        type TEXT NOT NULL,
+        definition TEXT NOT NULL,
+        variants_json TEXT,
+        related_json TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_course_term '
+      'ON wiki_entries(course, term)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_wiki_course ON wiki_entries(course)',
+    );
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS wiki_sources (
+        id TEXT PRIMARY KEY,
+        entry_id TEXT NOT NULL,
+        note_id TEXT NOT NULL,
+        note_title TEXT,
+        snippet TEXT NOT NULL,
+        conflict INTEGER NOT NULL DEFAULT 0,
+        alt_definition TEXT,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_source_unique '
+      'ON wiki_sources(entry_id, note_id, snippet)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_wiki_source_entry '
+      'ON wiki_sources(entry_id)',
+    );
   }
 
   /// 加列前先查 PRAGMA table_info，保证迁移可重复执行（避免重复 ALTER 抛错）

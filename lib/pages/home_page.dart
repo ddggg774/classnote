@@ -8,6 +8,7 @@ import '../services/db_service.dart';
 import 'record_page.dart';
 import 'note_detail_page.dart';
 import 'search_page.dart';
+import 'wiki_page.dart';
 import 'settings_page.dart';
 
 /// 列表项用的轻量模型：只带列表要显示的字段 + 预计算好的摘要。
@@ -107,6 +108,13 @@ class _HomePageState extends State<HomePage> {
         title: const Text('我的课堂笔记'),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.menu_book_outlined),
+            tooltip: '课程知识库',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const WikiPage()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: '搜索笔记',
