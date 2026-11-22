@@ -26,6 +26,41 @@ class SettingsService {
   static const String _keyAutoCorrect = 'auto_correct_enabled';
   static const String _keyCaptureProfile = 'capture_profile';
 
+  /// 免责声明：已同意的版本号与同意时间（本机记录，不上传）
+  static const String _keyDisclaimerVersion = 'disclaimer_version';
+  static const String _keyDisclaimerAt = 'disclaimer_accepted_at';
+
+  /// 进程内缓存，供只读页显示「已同意版本/时间」
+  static String? lastAcceptedVersion;
+  static int? lastAcceptedAt;
+
+  /// 版本号不同的条款需要重新同意；从未同意过也需要。
+  /// 抽成纯函数是为了能在测试里验证，不用碰 SharedPreferences。
+  static bool needsDisclaimerAcceptance(
+    String? storedVersion,
+    String currentVersion,
+  ) =>
+      storedVersion == null || storedVersion != currentVersion;
+
+  /// 读取是否已同意当前版本（同时刷新进程内缓存）
+  Future<bool> hasAcceptedDisclaimer(String currentVersion) async {
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString(_keyDisclaimerVersion);
+    lastAcceptedVersion = stored;
+    lastAcceptedAt = prefs.getInt(_keyDisclaimerAt);
+    return !needsDisclaimerAcceptance(stored, currentVersion);
+  }
+
+  /// 记录同意：版本号 + 时间戳
+  Future<void> acceptDisclaimer(String version) async {
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await prefs.setString(_keyDisclaimerVersion, version);
+    await prefs.setInt(_keyDisclaimerAt, now);
+    lastAcceptedVersion = version;
+    lastAcceptedAt = now;
+  }
+
   /// 旧键名，仅用于一次性迁移读取
   static const String _legacyAsrKey = 'aliyun_asr_key';
 

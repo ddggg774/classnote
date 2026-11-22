@@ -7,6 +7,7 @@ import '../config.dart';
 import '../services/audio_capture_profile.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
+import 'disclaimer_page.dart';
 import 'textbook_list_page.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -431,6 +432,31 @@ class _SettingsPageState extends State<SettingsPage> {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                         builder: (_) => const TextbookListPage()),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                const Divider(),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: const Icon(Icons.gavel_outlined),
+                  title: const Text('免责声明',
+                      style: TextStyle(fontSize: 13.5)),
+                  subtitle: Text(
+                    '录音合规、AI 内容边界、第三方服务与责任限制'
+                    '（版本 ${Disclaimer.version}）',
+                    style: TextStyle(
+                        fontSize: 11.5, color: Colors.grey.shade600),
+                  ),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => DisclaimerPage(
+                        readOnly: true,
+                        onAccepted: () {},
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 16),
