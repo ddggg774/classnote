@@ -142,6 +142,14 @@ void main() {
       expect(cleared.sectionTitle, isNull);
       expect(cleared.hasLocation, isFalse);
     });
+
+    test('copyWith：clearCourse 能真的清空课程（否则取消选择后永远挂着旧课）', () {
+      final note = makeNote();
+      final cleared = note.copyWith(clearCourse: true);
+      expect(cleared.course, isNull);
+      expect(cleared.effectiveCourse, '植物学 第三讲'); // 回退到 title
+      expect(cleared.chapterNo, '第五章'); // 课程清空不影响位置字段本身
+    });
   });
 
   group('从笔记还原位置（真实 SQL）', () {
@@ -226,6 +234,38 @@ void main() {
       final map = await service.sectionMapOf(data.book.id);
       expect(map.keys, [data.chapter.id]);
       expect(map[data.chapter.id]!.length, 2);
+    });
+
+    test('位置字段随笔记真正落库、能读回、能清空', () async {
+      final data = await prepareToc();
+      final db = DbService();
+      await db.insert(Note(
+        id: 'n-loc',
+        title: '植物学 第三讲',
+        transcript: '木兰科的花被片离生。',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1700000000000),
+        course: '植物学',
+        textbookId: data.book.id,
+        chapterNo: data.chapter.no,
+        chapterTitle: data.chapter.title,
+        sectionNo: data.section.no,
+        sectionTitle: data.section.title,
+      ));
+
+      final back = await db.queryById('n-loc');
+      expect(back, isNotNull);
+      expect(back!.hasLocation, isTrue);
+      expect(back.chapterKey, '第五章 被子植物 第一节 木兰科');
+      expect(back.textbookId, data.book.id);
+
+      // 清空位置后落库，再读回来必须是空——防止 clearLocation 只在内存里生效
+      await db.update(back.copyWith(clearLocation: true));
+      final cleared = await db.queryById('n-loc');
+      expect(cleared!.hasLocation, isFalse);
+      expect(cleared.chapterNo, isNull);
+      expect(cleared.sectionTitle, isNull);
+      expect(cleared.textbookId, isNull);
+      expect(cleared.course, '植物学'); // 清位置不动课程
     });
   });
 

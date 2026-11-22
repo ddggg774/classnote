@@ -21,10 +21,14 @@
          它们是已删除的 speech_to_text（系统语音引擎方案）遗留的，
          现在走的是「录音上传硅基流动识别」，不需要蓝牙，已一并移除。 -->
 
+    <!-- allowBackup=false：两个 API Key 存在 SharedPreferences 里，
+         开着自动备份会把它们传到云端（Google 账号备份），没必要冒这个险。
+         笔记本身在 SQLite 里，丢了可以从设置里重新填 Key，不该靠云备份。 -->
     <application
         android:label="课堂笔记"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"

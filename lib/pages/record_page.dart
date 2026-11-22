@@ -192,6 +192,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         // 清空位置后 copyWith 的 null 是「不修改」，必须显式清
         clearLocation: _textbook == null,
         clearPosition: _chapter == null,
+        // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
+        clearCourse: (_course ?? '').trim().isEmpty,
       ));
     }
     _lastSavedTranscript = text;
@@ -491,6 +493,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           // 位置被清空时 copyWith 的 null 等于「不修改」，必须显式声明清除
           clearLocation: _textbook == null,
           clearPosition: _chapter == null,
+          // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
+          clearCourse: (_course ?? '').trim().isEmpty,
         ));
       }
     } else {
@@ -634,6 +638,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           // 位置被清空时 copyWith 的 null 等于「不修改」，必须显式声明清除
           clearLocation: _textbook == null,
           clearPosition: _chapter == null,
+          // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
+          clearCourse: (_course ?? '').trim().isEmpty,
         ));
       }
     } else {
@@ -706,11 +712,14 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
               icon: const Icon(Icons.close, size: 15),
               tooltip: '清除位置',
               visualDensity: VisualDensity.compact,
-              onPressed: () => setState(() {
-                _textbook = null;
-                _chapter = null;
-                _section = null;
-              }),
+              onPressed: () {
+                setState(() {
+                  _textbook = null;
+                  _chapter = null;
+                  _section = null;
+                });
+                unawaited(_persistDraft(force: true));
+              },
             ),
           TextButton(
             onPressed: _pickLocation,
@@ -745,6 +754,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
       _chapter = result.chapter;
       _section = result.section;
     });
+    // 选完位置立刻落一次草稿：否则用户不继续打字就杀进程，位置会丢
+    unawaited(_persistDraft(force: true));
   }
 
   /// 课程选择行。
