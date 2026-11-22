@@ -35,12 +35,17 @@ class StudySummary {
   /// 与总结同一次落库、同一次读取，不会出现两处不同步。
   final List<PendingItem> pending;
 
+  /// 额外技能产出（技能 id → Markdown）。
+  /// 考点清单、复习题这类不进 detailMarkdown，避免污染"详细笔记"的语义。
+  final Map<String, String> extras;
+
   const StudySummary({
     required this.detailMarkdown,
     required this.mindMap,
     required this.graph,
     this.chunked = false,
     this.pending = const [],
+    this.extras = const {},
   });
 
   Map<String, dynamic> toJson() => {
@@ -51,6 +56,7 @@ class StudySummary {
         'chunked': chunked,
         if (pending.isNotEmpty)
           'pending': pending.map<Map<String, dynamic>>((p) => p.toJson()).toList(),
+        if (extras.isNotEmpty) 'extras': extras,
       };
 
   factory StudySummary.fromJson(Map<String, dynamic> json) {
@@ -78,6 +84,10 @@ class StudySummary {
               .map(PendingItem.fromJson)
               .toList() ??
           const [],
+      extras: (json['extras'] as Map?)?.map(
+            (k, v) => MapEntry(k.toString(), v?.toString() ?? ''),
+          ) ??
+          const {},
     );
   }
 

@@ -436,6 +436,91 @@ $textbook
     return '$textbook\n$_mergeSystemPrompt';
   }
 
+  /// 通用补全：给一段 system + user，要回一段文本。
+  ///
+  /// 存在的意义：考点提取、出题这类新技能需要调模型，但不该各自
+  /// 重写一遍 HTTP 与错误处理。它们复用这一个入口。
+  /// 不返回结构化数据——这些技能的产出本来就是给人读的 Markdown。
+  Future<String> complete({
+    required String system,
+    required String user,
+    double temperature = 0.3,
+    int maxTokens = 2500,
+  }) async {
+    final apiKey = apiKeyOverride ?? await _settings.getApiKey();
+    if (apiKey.isEmpty) {
+      throw AiException('请先在「设置」里填写 DeepSeek API Key',
+          needSettings: true, retryable: false);
+    }
+    return _chatWith(
+      apiKey: apiKey,
+      system: system,
+      user: user,
+      temperature: temperature,
+      maxTokens: maxTokens,
+    );
+  }
+
+  /// 与 _chat 同样的请求逻辑，但温度与 max_tokens 可调。
+  /// 单独抽出来而不是改 _chat 的默认值——_chat 的行为已经被现有测试锁住。
+  Future<String> _chatWith({
+    required String apiKey,
+    required String system,
+    required String user,
+    required double temperature,
+    required int maxTokens,
+  }) async {
+    late final http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse(AppConfig.deepSeekBaseUrl),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $apiKey',
+            },
+            body: jsonEncode({
+              'model': AppConfig.deepSeekModel,
+              'messages': [
+                {'role': 'system', 'content': system},
+                {'role': 'user', 'content': user},
+              ],
+              'temperature': temperature,
+              'max_tokens': maxTokens,
+            }),
+          )
+          .timeout(const Duration(seconds: 180));
+    } catch (e) {
+      throw AiException('网络请求失败：$e');
+    }
+
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      throw AiException('API Key 无效，请到设置里检查',
+          needSettings: true, retryable: false);
+    }
+    if (response.statusCode == 402) {
+      throw AiException('账户余额不足', retryable: false);
+    }
+    if (response.statusCode == 429) {
+      throw AiException('请求太频繁，请稍后再试');
+    }
+    if (response.statusCode != 200) {
+      throw AiException('请求失败（状态码 ${response.statusCode}）');
+    }
+
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final choices = decoded['choices'] as List?;
+    if (choices == null || choices.isEmpty) {
+      throw AiException('模型没有返回内容');
+    }
+    final message = (choices.first as Map)['message'] as Map?;
+    final content = (message?['content'] as String?)?.trim() ?? '';
+    if (content.isEmpty) {
+      throw AiException('模型返回了空内容');
+    }
+    return content;
+  }
+
   // ───────────────────────── 对外入口 ─────────────────────────
 
   /// 生成课堂笔记。默认 standard（九段式）。

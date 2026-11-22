@@ -16,6 +16,7 @@ import '../models/study_note.dart';
 import '../models/summary_level.dart';
 import '../services/db_service.dart';
 import '../services/settings_service.dart';
+import '../services/skill_registry.dart';
 import '../services/pending_fixer.dart';
 import '../services/template_service.dart';
 import '../services/tree_layout.dart';
@@ -66,6 +67,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 与 _report 分开：_report 是本次点「质量校准」的即时结果，
   /// 这个是历史存档，两者不互相覆盖。
   List<PendingItem> _savedPending = const [];
+
+  /// 额外技能产出（考点清单 / 复习题）
+  Map<String, String> _extras = const {};
   /// 校准前的原文，用于撤销
   String? _undoTranscript;
 
@@ -137,6 +141,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _terms = TerminologyPack.tryDecode(note.terminologyJson);
       _detailMarkdown = parsed?.detailMarkdown ?? '';
       _savedPending = parsed?.pending ?? const [];
+      _extras = parsed?.extras ?? const {};
       // 模板：存过就按存的来，没存过按课程推荐
       final savedTpl = note.templateId;
       _template = (savedTpl != null
@@ -507,6 +512,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
         // ── 报告区（可滚动，默认折叠成摘要）──
         if (report != null) _buildReportPanel(report),
+
+        // ── 额外技能产出（考点清单 / 复习题）──
+        if (_extras.isNotEmpty) _buildExtrasPanel(),
 
         // ── 上次「一键处理」留下的待确认（库里的，不是本次校准的）──
         if (report == null && _savedPending.isNotEmpty)
@@ -1434,6 +1442,56 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   }
 
   /// Tab 2：详细笔记（九段式 Markdown，可复制/导出）
+  /// 额外技能产出（考点清单 / 复习题）的展示区块。
+  /// 折叠起来：它们不是每次都要看，但想复习时能立刻展开。
+  Widget _buildExtrasPanel() {
+    if (_extras.isEmpty) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      decoration: BoxDecoration(
+        color: Colors.teal.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.teal.shade100),
+      ),
+      child: Column(
+        children: _extras.entries.map((e) {
+          final title = switch (e.key) {
+            BuiltinSkill.examPoints => '考点清单',
+            BuiltinSkill.quiz => '复习题',
+            _ => e.key,
+          };
+          return ExpansionTile(
+            tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+            childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            dense: true,
+            leading: Icon(
+              e.key == BuiltinSkill.quiz
+                  ? Icons.quiz_outlined
+                  : Icons.star_outline,
+              size: 18,
+              color: Colors.teal.shade700,
+            ),
+            title: Text(title,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.teal.shade900)),
+            subtitle: Text('${e.value.length} 字',
+                style: TextStyle(fontSize: 11, color: Colors.teal.shade400)),
+            expandedCrossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(
+                e.value,
+                style: const TextStyle(fontSize: 12.5, height: 1.6),
+              ),
+            ],
+          );
+        }).toList(),
+      ),
+    );
+  }
+
   Widget _buildDetailTab() {
     if (_detailMarkdown.isEmpty) {
       return _buildEmptyHint('还没有详细笔记，点右下角「一键总结」生成\n'

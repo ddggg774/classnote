@@ -14,6 +14,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../agent/agent_loop.dart';
 import '../agent/classroom_agent.dart';
+import '../models/skill.dart';
 import '../models/summary_level.dart';
 
 /// 一键处理的档位选项（含是否要导图）
@@ -31,10 +32,14 @@ class AgentRunSheet extends StatefulWidget {
   final ClassroomAgent agent;
   final ClassroomRequest request;
 
+  /// 本次启用的技能。传 null 表示用全部内置技能。
+  final SkillSet? skills;
+
   const AgentRunSheet({
     super.key,
     required this.agent,
     required this.request,
+    this.skills,
   });
 
   @override
@@ -59,6 +64,7 @@ class _AgentRunSheetState extends State<AgentRunSheet> {
     try {
       final result = await widget.agent.run(
         widget.request,
+        skills: widget.skills,
         onStep: (step) {
           if (!mounted) return;
           setState(() => _steps.add(step));

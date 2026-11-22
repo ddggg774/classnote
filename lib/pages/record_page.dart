@@ -24,6 +24,7 @@ import '../models/terminology.dart';
 import '../services/cloud_asr_service.dart';
 import '../services/db_service.dart';
 import '../services/settings_service.dart';
+import '../services/skill_registry.dart';
 import '../services/template_service.dart';
 import '../widgets/agent_run_sheet.dart';
 
@@ -277,6 +278,21 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     setState(() => _agentRunning = true);
     try {
       final agent = ClassroomAgent(apiKey: key);
+      // 按设置页的启停状态 + 课程适用性组装技能集合。
+      // Agent 会据此收窄提示词与工具——关掉的技能真的调不到。
+      final courseForSkills = (_course ?? '').trim().isNotEmpty
+          ? _course!.trim()
+          : title;
+      final skills =
+          await SkillRegistry().resolve(courseName: courseForSkills);
+      if (skills.isEmpty) {
+        if (mounted) {
+          _showSnack('没有启用任何技能，请到「设置」里至少打开一个');
+          setState(() => _agentRunning = false);
+        }
+        return;
+      }
+      if (!mounted) return;
       final result = await showModalBottomSheet<ClassroomResult>(
         context: context,
         isScrollControlled: true,
@@ -284,6 +300,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         enableDrag: false,
         builder: (_) => AgentRunSheet(
           agent: agent,
+          skills: skills,
           request: ClassroomRequest(
             // 课程优先用用户选的，没选才退回标题——
             // 模板匹配与术语表都要准确的课程名，不能靠标题猜。
@@ -463,6 +480,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
       // 待确认项必须落库：否则用户退出详情页再进来就看不到，
       // 「点击定位」也失去了对象。
       pending: _buildPendingItems(result),
+      extras: result.extras,
     ).encode();
   }
 

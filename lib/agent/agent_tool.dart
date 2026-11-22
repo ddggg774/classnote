@@ -89,6 +89,21 @@ class ToolRegistry {
   bool contains(String name) => _tools.containsKey(name);
 
   List<String> get names => _tools.keys.toList();
+
+  /// 按名字集合筛选出子集。
+  ///
+  /// 技能系统靠它实现「关掉某技能就真的调不到对应工具」——
+  /// 只藏提示词不藏工具，模型还是会想办法凑。
+  ToolRegistry filter(Set<String> allowed) {
+    final kept = <AgentTool>[
+      for (final t in _tools.values)
+        if (allowed.contains(t.name)) t,
+    ];
+    return ToolRegistry(kept);
+  }
+
+  /// 取出全部工具（用于再组装）
+  List<AgentTool> get all => List.unmodifiable(_tools.values);
 }
 
 /// 常用的 JSON Schema 片段，避免每个工具重复写

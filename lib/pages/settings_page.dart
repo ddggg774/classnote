@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import '../config.dart';
 import '../services/audio_capture_profile.dart';
 import '../services/settings_service.dart';
+import '../services/skill_registry.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -28,6 +29,10 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _autoCorrect = false;
   CaptureProfile _captureProfile = CaptureProfile.normal;
 
+  /// 技能启停（id → 是否启用）
+  Map<String, bool> _skillEnabled = {};
+  bool _skillsLoaded = false;
+
   @override
   void initState() {
     super.initState();
@@ -42,6 +47,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final auto = await _settings.getAutoCorrect();
     final profileCode = await _settings.getCaptureProfile();
     final profile = CaptureProfile.fromCode(profileCode);
+    final skills = await SkillRegistry().overview();
     if (mounted) {
       setState(() {
         _deepSeekController.text = dsKey;
@@ -50,6 +56,8 @@ class _SettingsPageState extends State<SettingsPage> {
         _asrModel = model;
         _autoCorrect = auto;
         _captureProfile = profile;
+        _skillEnabled = {for (final s in skills) s.skill.id: s.enabled};
+        _skillsLoaded = true;
         _loading = false;
       });
     }
@@ -97,6 +105,14 @@ class _SettingsPageState extends State<SettingsPage> {
     await _settings.saveGlossary(_glossaryController.text);
     await _settings.saveAutoCorrect(_autoCorrect);
     await _settings.saveCaptureProfile(_captureProfile.name);
+    if (_skillsLoaded) {
+      await SkillRegistry().saveEnabledIds(
+        _skillEnabled.entries
+            .where((e) => e.value)
+            .map((e) => e.key)
+            .toSet(),
+      );
+    }
 
     if (!mounted) return;
     final kept = <String>[
@@ -350,6 +366,43 @@ class _SettingsPageState extends State<SettingsPage> {
                         .toList(),
                   ),
                 ),
+                const SizedBox(height: 20),
+
+                // ── 技能开关 ──
+                Row(
+                  children: [
+                    const Text('技能',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${_skillEnabled.values.where((v) => v).length} / ${_skillEnabled.length} 已启用',
+                      style: TextStyle(
+                          fontSize: 11.5, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '关掉的技能不会出现在「一键处理」里——连对应工具都不暴露给模型，'
+                  '不是只藏起来不提示。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                const SizedBox(height: 4),
+                if (_skillsLoaded)
+                  ...SkillRegistry.builtins.map((skill) => SwitchListTile(
+                        value: _skillEnabled[skill.id] ?? false,
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: Text(skill.name,
+                            style: const TextStyle(fontSize: 13.5)),
+                        subtitle: Text(skill.description,
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.grey.shade600)),
+                        onChanged: (v) => setState(
+                            () => _skillEnabled[skill.id] = v),
+                      )),
                 const SizedBox(height: 16),
 
                 const Text(

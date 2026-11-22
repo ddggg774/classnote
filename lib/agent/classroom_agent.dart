@@ -17,9 +17,11 @@
 import '../models/mind_graph.dart';
 import '../models/study_note.dart';
 import '../models/note_template.dart';
+import '../models/skill.dart';
 import '../models/summary_level.dart';
 import '../services/ai_service.dart';
 import '../services/cloud_asr_service.dart';
+import '../services/skill_registry.dart';
 import '../services/template_service.dart';
 import 'agent_loop.dart';
 import 'agent_tool.dart';
@@ -87,6 +89,10 @@ class ClassroomResult {
   /// 详细导图
   final MindGraph? graph;
 
+  /// 额外技能产出（技能 id → Markdown 文本）。
+  /// 考点清单、复习题这类不做成结构化模型，直接给文本，
+  /// 因为它们本来就是给人读的，没必要再解析一遍。
+  final Map<String, String> extras;
 
   const ClassroomResult({
     required this.answer,
@@ -99,6 +105,7 @@ class ClassroomResult {
     this.summary,
     this.level,
     this.graph,
+    this.extras = const {},
   });
 
   String get logText => steps.map((s) => s.line).join('\n');
@@ -114,6 +121,7 @@ class ClassroomResult {
 
 /// 编排过程中的共享状态：工具之间靠它传递中间结果
 class _PipelineContext {
+  final Map<String, String> extras = {};
   String? transcript;
   String? corrected;
   final List<String> pendingNotes = [];
@@ -167,20 +175,36 @@ class ClassroomAgent {
 - 不要编造工具返回的内容。
 - 没有文本时不要凭空总结或画导图。
 - 到达步数上限仍未完成时，如实说明卡在哪一步。
+- **只使用你现在看得到的工具**。用户的技能设置决定了这次暴露哪些工具，
+  没出现的能力就是这次不要做的，不要去猜别的工具名。
 ''';
 
-  /// 跑一次完整流程
+  /// 跑一次完整流程。
+  ///
+  /// [skills] 决定这次能做哪些事：
+  ///   · 提示词里只拼入启用技能的说明
+  ///   · 工具集里只暴露启用技能的工具
+  /// 两者必须同时收窄——只藏工具但提示词还写着"要总结"，
+  /// 模型会困惑甚至用别的工具硬凑。
+  ///
+  /// [skills] 为 null 时用全部内置技能（兼容旧调用）。
   Future<ClassroomResult> run(
     ClassroomRequest request, {
     void Function(AgentStep step)? onStep,
     int maxSteps = 10,
+    SkillSet? skills,
   }) async {
     final ctx = _PipelineContext();
+    final activeSkills = skills ??
+        SkillSet(SkillRegistry.builtins
+            .where((s) => request.wantMindMap || s.id != BuiltinSkill.mindmap)
+            .toList());
     final loop = AgentLoop(
       apiKey: apiKey,
-      tools: _buildTools(ctx, request),
+      // 工具按技能过滤；transcribe 是基础能力，始终暴露
+      tools: _buildTools(ctx, request, activeSkills),
       config: AgentConfig(
-        systemPrompt: systemPrompt,
+        systemPrompt: _composePrompt(activeSkills),
         maxSteps: maxSteps,
         temperature: 0.2,
         maxTokens: 4000,
@@ -227,10 +251,36 @@ class ClassroomAgent {
       summary: ctx.studySummary?.detailMarkdown ?? ctx.summary,
       level: ctx.level,
       graph: ctx.graph,
+      extras: Map.unmodifiable(ctx.extras),
     );
   }
 
-  ToolRegistry _buildTools(_PipelineContext ctx, ClassroomRequest request) {
+  /// 把基础提示词与启用技能的说明拼起来。
+  /// 没有任何技能时退回基础提示词，不至于让模型无指令可循。
+  static String _composePrompt(SkillSet skills) {
+    final fragment = skills.promptFragment;
+    if (fragment.trim().isEmpty) return systemPrompt;
+    return '$systemPrompt\n\n# 本次启用的技能\n$fragment';
+  }
+
+  /// 按技能筛选工具。
+  ///
+  /// transcribe 是基础能力（没有它就没有文本），不受技能控制，始终暴露。
+  /// 其余工具必须由某个启用技能声明，才会出现在模型眼前。
+  ToolRegistry _buildTools(
+    _PipelineContext ctx,
+    ClassroomRequest request,
+    SkillSet skills,
+  ) {
+    final allowed = <String>{'transcribe', ...skills.toolNames};
+    return _allTools(ctx, request).filter(allowed);
+  }
+
+  /// 全部工具定义
+  ToolRegistry _allTools(
+    _PipelineContext ctx,
+    ClassroomRequest request,
+  ) {
     return ToolRegistry([
       // ─────────────── 转写 ───────────────
       AgentTool(
@@ -459,8 +509,144 @@ class ClassroomAgent {
           }
         },
       ),
+
+      // ─────────────── 提取考点（exam-points 技能） ───────────────
+      AgentTool(
+        name: 'extract_exam_points',
+        description: '从课堂内容里提取考点清单：老师明确说了会考、'
+            '重点、注意的内容。只提取原文真的强调过的，不推测。',
+        parameters: Schema.object(
+          properties: {
+            'text': Schema.string('课堂文本'),
+            'course': Schema.string('课程名'),
+          },
+          required: ['text', 'course'],
+        ),
+        execute: (args) async {
+          final text = (args['text'] ?? '').toString();
+          final course = (args['course'] ?? '').toString();
+          if (text.trim().isEmpty) {
+            return ToolResult.error('没有可分析的文本');
+          }
+          final ai = aiService ?? AiService(apiKeyOverride: apiKey);
+          try {
+            final md = await ai.complete(
+              system: _examPointsPrompt,
+              user: '课程：$course\n\n$text',
+              temperature: 0.2,
+              maxTokens: 2000,
+            );
+            ctx.extras[BuiltinSkill.examPoints] = md;
+            return ToolResult.ok('考点清单已生成（${md.length} 字）。');
+          } catch (e) {
+            return ToolResult.error(
+              '提取考点失败：${e.toString().replaceFirst('Exception: ', '')}',
+            );
+          }
+        },
+      ),
+
+      // ─────────────── 生成复习题（quiz 技能） ───────────────
+      AgentTool(
+        name: 'make_quiz',
+        description: '根据课堂内容出复习题，附参考答案与原文依据。'
+            '只考笔记里真的讲过的内容。',
+        parameters: Schema.object(
+          properties: {
+            'text': Schema.string('课堂文本'),
+            'course': Schema.string('课程名'),
+            'count': Schema.integer('题目数量，默认 5'),
+          },
+          required: ['text', 'course'],
+        ),
+        execute: (args) async {
+          final text = (args['text'] ?? '').toString();
+          final course = (args['course'] ?? '').toString();
+          final count = (args['count'] as num?)?.toInt() ?? 5;
+          if (text.trim().isEmpty) {
+            return ToolResult.error('没有可出题的文本');
+          }
+          final n = count.clamp(1, 15);
+          final ai = aiService ?? AiService(apiKeyOverride: apiKey);
+          try {
+            final md = await ai.complete(
+              system: _quizPrompt,
+              user: '课程：$course\n题数：$n\n\n$text',
+              temperature: 0.4,
+              maxTokens: 3000,
+            );
+            ctx.extras[BuiltinSkill.quiz] = md;
+            return ToolResult.ok('复习题已生成（${md.length} 字）。');
+          } catch (e) {
+            return ToolResult.error(
+              '生成复习题失败：${e.toString().replaceFirst('Exception: ', '')}',
+            );
+          }
+        },
+      ),
     ]);
   }
+
+  /// 考点提取的提示词。核心约束：只提老师明确强调过的。
+  static const String _examPointsPrompt = '''
+你是课堂考点提取助手。从给定的课堂文本里提取**考前需要记住的考点**。
+
+## 什么算考点
+- 老师明确说"会考""要考""这是重点""注意这里""容易错"的内容
+- 老师反复强调的
+- 布置的作业要求
+- 老师点名要求掌握的方法、名词、公式
+
+## 什么不算
+- 老师随口提的背景、故事、寒暄
+- 老师自己说"不考""不用记"的
+- 你从学科常识里知道但这段没强调的
+
+## 铁律
+只提取原文真的强调过的。原文没强调的内容一律不写，
+即使你认为它重要——用户要的是"老师说的考点"，不是通用重点总结。
+
+## 输出格式
+# 考点清单
+
+## 必考重点
+- 考点：说明 〔依据：原文片段〕
+
+## 易错点
+- 易错点：为什么容易错 〔依据：原文片段〕
+
+## 作业与提交
+- 要求 / 截止时间 / 提交方式（没提到就写「未提及」）
+
+没有内容的分类写「本节未提及」，不要省略分类标题。
+''';
+
+  /// 出题的提示词。核心约束：答案必须能在原文找到依据。
+  static const String _quizPrompt = '''
+你是课堂复习题出题助手。根据给定的课堂文本出复习题。
+
+## 铁律
+1. **题目只能考文本里真的讲过的内容**。没讲过的一律不出。
+2. **每道题的答案必须能在原文找到依据**，并在答案后标 〔依据：原文片段〕。
+3. 难度分布：约 1/3 记忆题（是什么）、1/3 理解题（为什么）、1/3 应用题（怎么用）。
+4. 不要出"以下哪个正确"这种需要凑干扰项的题——干扰项容易编造。
+   优先出简答、填空、名词解释、计算。
+
+## 输出格式
+# 复习题
+
+## 一、名词解释
+1. 题目
+   参考答案：…… 〔依据：……〕
+
+## 二、简答
+...
+
+## 三、应用
+...
+
+题目数量按用户要求。答案要简短但准确，不做过度展开。
+''';
 
   /// 默认的纠错 Agent 构造（带术语缓存）
   static CorrectionAgent _defaultCorrector(String key) =>
