@@ -160,7 +160,7 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
           var pack = presetPack ?? session.pack;
 
           if (pack == null && _store != null) {
-            pack = await _store!.get(course, chapter);
+            pack = await _store!.get(course, chapter, language: language);
             if (pack != null) {
               session.pack = pack;
               session.cacheHit = true;
@@ -179,7 +179,7 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
               );
               session.pack = pack;
               // 生成成功后写缓存，下次同章节直接读
-              await _store?.put(course, chapter, pack);
+              await _store?.put(course, chapter, pack, language: language);
             } catch (e) {
               return ToolResult.error(
                 '术语表检索失败（$e）。此时只能修正非常明显的同音错误，'

@@ -154,7 +154,8 @@ class _HomePageState extends State<HomePage> {
               : RefreshIndicator(
                   onRefresh: _loadNotes,
                   child: ListView(
-                    padding: const EdgeInsets.all(12),
+                    // 底部多留一截：两个悬浮按钮（英语课 + 新建课堂）会盖住最后一张卡片
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 110),
                     children: [
                       if (drafts.isNotEmpty) ...[
                         _buildSectionTitle('未完成（可继续记录）', drafts.length),

@@ -64,7 +64,21 @@ class SearchService {
       }
 
       // 用原始查询串在原文里定位，bigram 位置还原不到原句
-      final located = SearchIndex.locate(note.transcript, q);
+      var located = SearchIndex.locate(note.transcript, q);
+      // 中文关键词命中英语课的译文时，原文里找不到这个词——
+      // 这时退到译文里定位，否则搜索结果会显示一段与关键词无关的原文
+      if (located.position < 0) {
+        final translation = _translationOf(note);
+        if (translation.trim().isNotEmpty) {
+          final inTranslation = SearchIndex.locate(translation, q);
+          if (inTranslation.position >= 0) {
+            located = (
+              snippet: '〔译文〕${inTranslation.snippet}',
+              position: -1,
+            );
+          }
+        }
+      }
       hits.add(SearchHit(
         noteId: note.id,
         title: note.title,

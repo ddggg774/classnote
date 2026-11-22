@@ -70,6 +70,10 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 上次翻译时的原文，用来判断"没改就不重复花钱"
   String? _lastTranslatedText;
 
+  /// 上一次翻译失败对应的原文（归一化）。同一段文本不自动重试，避免每保存一次就烧两次请求；
+  /// 用户主动点开对照时仍会强制重试。
+  String? _translationFailedFor;
+
   /// 正在做术语准备或质量校准
   bool _correcting = false;
   bool _wikiExtracting = false;
@@ -205,11 +209,17 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   void _initTranslation(Note note) {
     final cached = TranslationResult.tryDecode(note.translationJson);
     _translation = cached;
-    _lastTranslatedText = cached?.pairs.map((p) => p.source).join(' ');
+    // 存归一化后的文本：pairs 拼回来的句子与原稿空格/换行不同，
+    // 直接比字符串会导致「没改也被判成改了」，白花一次翻译
+    _lastTranslatedText =
+        cached == null ? null : _normalize(cached.pairs.map((p) => p.source).join(' '));
     if (note.isEnglish && cached == null && note.transcript.trim().length >= 20) {
       _scheduleTranslate();
     }
   }
+
+  /// 去掉空白再比较：换行、空格差异不算改动
+  static String _normalize(String s) => s.replaceAll(RegExp(r'\s+'), '');
 
   /// 防抖 2 秒：用户连续改原文时只翻最后一次。
   void _scheduleTranslate() {
@@ -229,7 +239,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       if (mounted) setState(() => _translationError = '原文太短，暂不翻译');
       return;
     }
-    if (!force && text == _lastTranslatedText) return;
+    if (!force && _normalize(text) == _lastTranslatedText) return;
+    if (!force && _normalize(text) == _translationFailedFor) return;
 
     setState(() {
       _translating = true;
@@ -238,27 +249,50 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     try {
       final result = await TranslationService()
           .translate(text: text, sourceLang: note.language);
-      final updated = note.copyWith(translationJson: result.encode());
-      await _db.update(updated);
       if (!mounted) return;
-      setState(() {
-        _note = updated;
-        _translation = result;
-        _lastTranslatedText = text;
-      });
+
+      // 翻译期间用户又改了原文：这次结果已经对不上了。
+      // 丢弃而不是落库——否则会把旧译文挂到新原文上，
+      // 更糟的是用旧的 note 对象回写，可能把用户刚保存的原文覆盖掉。
+      final latest = _transcriptController.text.trim();
+      if (_normalize(latest) == _normalize(text)) {
+        final current = _note;
+        if (current != null) {
+          final updated = current.copyWith(translationJson: result.encode());
+          await _db.update(updated);
+          if (!mounted) return;
+          setState(() {
+            _note = updated;
+            _translation = result;
+            _lastTranslatedText = _normalize(text);
+          });
+        }
+      }
     } catch (e) {
       if (mounted) {
         setState(() =>
             _translationError = e.toString().replaceFirst('Exception: ', ''));
       }
+      // 记下"这段失败过"：不再自动重试，但用户点开对照时 force 仍会重试。
+      // 注意不能把 _lastTranslatedText 设成新原文——那会让旧译文被当成"最新"，
+      // 用户点开对照会看到过期译文。
+      _translationFailedFor = _normalize(text);
     } finally {
       if (mounted) setState(() => _translating = false);
+    }
+    // 翻译期间又改过 → 补一次（否则这次改动永远等不到译文）
+    if (mounted && _note != null && _note!.isEnglish) {
+      final latest = _transcriptController.text.trim();
+      if (_normalize(latest) != _normalize(text)) _scheduleTranslate();
     }
   }
 
   Future<void> _openTranslation() async {
     if (_translating) return;
-    if (_translation == null) {
+    final currentNorm = _normalize(_transcriptController.text.trim());
+    // 原文改过而译文还是旧的：先翻再打开，别让用户看到过期对照
+    if (_translation == null ||
+        (_lastTranslatedText != null && currentNorm != _lastTranslatedText)) {
       await _translateNow(force: true);
     }
     if (!mounted) return;

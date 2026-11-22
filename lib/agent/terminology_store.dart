@@ -39,19 +39,25 @@ class TerminologyStore {
   final DbService _db;
   TerminologyStore([DbService? db]) : _db = db ?? DbService();
 
-  /// 缓存键：课程+章节归一化（去空格、统一大小写不敏感的分隔）
-  static String _keyOf(String course, String chapter) =>
-      '${course.trim()}|${chapter.trim()}';
+  /// 缓存键：语言 + 课程 + 章节。
+  /// 语言必须进键：同一门课既可能上中文课也可能上英语课，
+  /// 键里不带语言会把中文术语包喂给英语课的纠错。
+  static String _keyOf(String course, String chapter, String language) =>
+      '${language.trim()}|${course.trim()}|${chapter.trim()}';
 
   /// 读取缓存。没有则返回 null。
-  Future<TerminologyPack?> get(String course, String chapter) async {
+  Future<TerminologyPack?> get(
+    String course,
+    String chapter, {
+    String language = 'zh',
+  }) async {
     if (course.trim().isEmpty) return null;
     try {
       final db = await _db.database;
       final rows = await db.query(
         'terminology_cache',
         where: 'cache_key = ?',
-        whereArgs: [_keyOf(course, chapter)],
+        whereArgs: [_keyOf(course, chapter, language)],
         limit: 1,
       );
       if (rows.isEmpty) return null;
@@ -64,14 +70,19 @@ class TerminologyStore {
   }
 
   /// 写入/更新缓存
-  Future<void> put(String course, String chapter, TerminologyPack pack) async {
+  Future<void> put(
+    String course,
+    String chapter,
+    TerminologyPack pack, {
+    String language = 'zh',
+  }) async {
     if (course.trim().isEmpty) return;
     try {
       final db = await _db.database;
       await db.insert(
         'terminology_cache',
         {
-          'cache_key': _keyOf(course, chapter),
+          'cache_key': _keyOf(course, chapter, language),
           'course': course.trim(),
           'chapter': chapter.trim(),
           'pack_json': pack.encode(),
@@ -113,13 +124,13 @@ class TerminologyStore {
     }
   }
 
-  Future<void> remove(String course, String chapter) async {
+  Future<void> remove(String course, String chapter, {String language = 'zh'}) async {
     try {
       final db = await _db.database;
       await db.delete(
         'terminology_cache',
         where: 'cache_key = ?',
-        whereArgs: [_keyOf(course, chapter)],
+        whereArgs: [_keyOf(course, chapter, language)],
       );
     } catch (_) {}
   }

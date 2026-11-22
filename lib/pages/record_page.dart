@@ -973,8 +973,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                           border: Border.all(color: Colors.teal.shade100),
                         ),
                         child: Text(
-                          '英语课：识别语言由模型自动判断，转写后会自动给出逐句中文对照，'
-                          '术语按「英文（中文释义）」整理。',
+                          '英语课：识别语言由模型自动判断，转写后会自动给出逐句中文对照；'
+                          '术语表保留英文原文 + 中文释义，总结里写成「中文（English）」。',
                           style: TextStyle(
                               fontSize: 11.5,
                               height: 1.4,
