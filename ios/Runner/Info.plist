@@ -66,5 +66,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- iOS 首次请求麦克风时必须给出用途说明，缺了会直接崩进程 -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>课堂录音需要麦克风权限，用于把老师讲的内容转成文字并生成笔记。</string>
+	<!-- ATS：全部接口都是 HTTPS，不需要放开明文；保持默认严格模式即可 -->
 </dict>
 </plist>

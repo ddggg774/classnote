@@ -14,6 +14,7 @@
 // 前台服务这些仍归 RecordPage / CloudAsrService 管——那部分已经验证过，
 // 塞进 Agent 循环只会把稳定的东西拖进来一起冒险。
 // 同理，Agent 的产物是文本与结构，落库由调用方决定。
+import 'terminology_store.dart';
 import '../models/mind_graph.dart';
 import '../models/study_note.dart';
 import '../models/note_template.dart';
@@ -648,7 +649,9 @@ class ClassroomAgent {
 题目数量按用户要求。答案要简短但准确，不做过度展开。
 ''';
 
-  /// 默认的纠错 Agent 构造（带术语缓存）
+  /// 默认的纠错 Agent 构造：必须把 TerminologyStore 传进去，
+  /// 否则「按课程+章节查缓存」这条链根本不会执行（_store 为 null 时直接跳过），
+  /// 每节课都在现场重新生成术语表，白花一次调用。
   static CorrectionAgent _defaultCorrector(String key) =>
-      CorrectionAgent(apiKey: key);
+      CorrectionAgent(apiKey: key, store: TerminologyStore());
 }

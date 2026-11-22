@@ -15,6 +15,7 @@
 //   mark_missing       → 真的记录缺失位置，最终输出
 // 这些累积结果由 AgentSession 持有，Agent 跑完后一起取出来。
 // 如果工具只是"返回一句 OK"，那这套 Agent 就是假的——这点我很在意。
+import '../config.dart';
 import '../models/terminology.dart';
 import '../services/terminology_service.dart';
 import 'agent_loop.dart';
@@ -144,6 +145,9 @@ class CorrectionAgent {
               pack = await _terminologyService.prepare(
                 courseName: course,
                 topic: chapter,
+                // 教材名/编者/出版社一起带上：模型知道是哪本书的哪一版，
+                // 才能按那套术语体系去猜误听词，而不是泛泛给"这门课的术语"
+                material: AppConfig.textbookLine(course),
               );
               session.pack = pack;
               // 生成成功后写缓存，下次同章节直接读

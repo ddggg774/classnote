@@ -1,275 +1,110 @@
-# 课堂笔记 App · 安卓打包与运行指南
+# classnote · 课堂笔记
 
-这是一个用 Flutter 写的"课堂智能笔记"App：上课把老师讲的内容变成文字 → 一键 AI 总结 → 自动生成思维导图。以下带你从零跑起来并打出安卓 APK。
+把一节课变成可复习的笔记：**录音 → 云端转写 → 术语纠错 → 三档总结 → 思维导图 → 知识沉淀**。Flutter 写的 Android / iOS App，数据全在本机，模型直连 DeepSeek 与硅基流动，不需要自建服务器。
 
-> **语音输入方式（重要）**：文字记录走**云端语音识别（硅基流动 SenseVoiceSmall）**——在记录页点「开始录音」说话，说完点「停止」，App 会把录音上传到硅基流动转成文字，自动追加到输入框。这样不依赖手机系统语音引擎，任何手机（包括没有 Google 语音服务的国产机）都能用。同时也保留手机输入法麦克风 🎤、手动打字、粘贴作为兜底。需在设置里填硅基流动 API Key（SenseVoiceSmall 模型**永久免费**，且手机浏览器即可申请）。
+![应用图标](assets/branding/app_icon_512.png)
 
-> 全程复制命令即可，遇到报错看文末「常见问题排查」。
+## 它能做什么
 
-## ✅ 构建状态（已实测通过）
-
-本项目已在 **Flutter 3.50.0 / Dart 3.14** 环境下成功编译（本机缺 Android SDK，见下方"当前验证状态"）：
-
-- 产物：`build/app/outputs/flutter-apk/app-release.apk`（v2 签名）
-- 已验证：APK 签名有效、可安装
-- 静态检查 `flutter analyze`：**No issues found（0 条）**
-- 语音方案已改为「云端识别」：App 录音 → 上传硅基流动（SenseVoiceSmall，永久免费）转成文字，不依赖系统语音引擎，国产手机也能正常用
-
-> 说明：release 包用的是 Flutter 自动生成的调试签名，**可直接安装测试**。若要正式上架，请按下面 3.2 节配置自己的正式签名。
-
-### 当前验证状态（2026-11-20 详细笔记 + 详细导图改版后）
-
-| 项 | 状态 |
+| 环节 | 说明 |
 |---|---|
-| `flutter analyze` | ✅ No issues found |
-| `flutter test` | ✅ 58 个单元测试全部通过 |
-| `flutter build apk --release` | ✅ 成功，51.1MB，签名已验证 |
+| 录音转写 | 60 秒切片上传硅基流动（SenseVoiceSmall 免费），串行识别、失败重传、前台服务保活 |
+| 术语纠错 | 课前按「课程 + 章节」生成术语表与常见误听形式，纠错子 Agent 只改高置信项，其余标待确认 |
+| 三档总结 | 速览 / 九段式 / 详细（带原文引用），超长课堂自动分块再合并 |
+| 思维导图 | 3–5 级结构，树形、2D 画布两种视图，可导出 PNG / Markdown / Markmap / Mermaid / OPML |
+| 教材定位 | 教材库 + 章节目录（粘贴解析或手动录入），录音前定位到「第五章 第二节」，位置喂给术语与总结 |
+| 检索问答 | 自建 bigram 倒排索引（不依赖 FTS5），全局搜索 + 带出处的跨笔记问答 |
+| 知识库 | 课程级 Wiki 词条，增量抽取，定义冲突不覆盖、留待人工裁定 |
 
-> APK：`build/app/outputs/flutter-apk/app-release.apk`，副本 `E:\Downloads\classnote-release.apk`
->
-> **构建须知（这台机器的两个坑，换机器可忽略）**：
-> 1. 用户名含中文（`C:\Users\金运来`）会让 `jni` 插件的 CMake/ninja 报
->    `FindFirstFileExA` 路径语法错误。解决：把 `PUB_CACHE` 指到纯英文路径
->    （本机用 `E:\dev\pub-cache`，已复制好）。
-> 2. `storage.googleapis.com` 在本机被解析到 `127.0.0.1`，Flutter 引擎产物拉不下来。
->    已在 `android/settings.gradle.kts` 追加 `storage.flutter-io.cn` 镜像仓库。
->
-> **详细的改动清单、每处改了什么为什么、以及 15 条必测场景，见 [优化改动说明.md](./优化改动说明.md)。**
-> 改动前的原始版本备份在 `E:\Downloads\_backup\classnote_backup_20261118_224041\`，且项目内已 `git init`，
-> `git diff 634abf1` 可查看全部改动，`git checkout 634abf1` 可回滚。
+## 快速开始
 
----
+### 需要
 
-## ✨ 已实现功能
+- Flutter 3.50+ / Dart 3.14+
+- 两个 Key（App 内「设置」页填写，只存本机）：
+  - **DeepSeek**：总结、纠错、术语表、Wiki —— https://platform.deepseek.com
+  - **硅基流动**：语音转写 —— https://cloud.siliconflow.cn （SenseVoiceSmall 免费）
 
-- **语音转文字**：点「开始录音」说话、点「停止」后自动上传云端转成文字；也能用输入法麦克风 🎤、手动打字、粘贴（兼容所有手机）
-- **识别模型可切换**：设置页可选 SenseVoiceSmall / TeleSpeechASR，同一个 Key、同一个接口，觉得不准就换一个对比
-- **课前术语准备**：填课程名/章节/教材，自动生成三级术语表（每条带"常见误听形式"）、initial_prompt、拾音风险提示
-- **质量校准（A/B/C 三档）**：高置信术语直接改并标〔改：原→正〕；拿不准的只标〔疑似：候选，待确认〕不编造；远场缺词标〔此处可能缺失〕不补全；质量过低先给可用性评估
-- **四段式校准报告**：纠错正文 / 术语命中与漏听清单 / 待确认清单（带出现次数与时间戳）/ 拾音改进建议
-- **AI 纠错 + 术语表**：填入本节课的专业名词，原文 Tab 点「AI 纠错」只修听岔的字词（不润色、不改写），改动逐条可见、可撤销
-- **自动分段 + 失败重试**：每 60 秒自动切一段上传，60 秒内就能看到第一批文字；某段失败会自动退避重试 3 次，仍失败则在正文标出位置并可一键补传
-- **实时进度**：录音时顶部显示已录时长、第几段、已转写段数、排队段数
-- **锁屏可录**：录音期间起前台服务 + 常驻通知（显示已录时长），锁屏放桌上也能继续录，不怕系统回收进程
-- **崩溃可恢复**：录音一开始就落草稿，每段识别完成即写库；中途被杀/误退后，首页「未完成」分区可以继续
-- **一键 AI 详细笔记**：点「一键总结」生成**九段式**详细课堂笔记（课程信息 / 知识点结构 / 例题与解题步骤 / 老师强调与考试作业提示 / 课堂互动问答 / 术语表 / 学习任务表 / 疑问待确认清单 / 时间戳回溯），可直接复制或导出 `.md` 二次编辑
-- **不编造、缺口标注**：转写不清、公式数字可疑的地方标〔待确认〕〔转写缺失〕，不会瞎补
-- **长课堂自动分块**：两小时课堂先分块整理再合并成完整笔记，不会超上下文
-- **思维导图（3–5 级详细结构）**：主图放课程主题 + 11 个固定分支，点进去看子图的完整层级；节点带关系标注、视觉标记和原文回溯
-- **多格式导出**：Markdown 缩进列表（可直接导入 XMind / 幕布）、Markmap 交互网页（手机浏览器打开即可折叠浏览）、Mermaid、OPML、JSON；也保留导出 PNG 图片
-- **API Key 应用内设置**：不用改代码、不用重新打包，装好后在 App 里填 Key 即可
-
----
-
-## 第 0 步：填写两个 API Key（都在 App 内操作）
-
-**无需改代码或重新打包**，装好 App 后：首页右上角「⚙ 设置」，填两个 Key 并保存。
-
-### Key ① 硅基流动（语音转文字，必须）
-> 选它的原因：**手机浏览器就能申请**（不像阿里云百炼强制电脑端），且 SenseVoiceSmall 识别模型**永久免费**。
-
-1. 手机浏览器打开 <https://cloud.siliconflow.cn>，手机号注册登录。
-2. 完成**实名认证**：支付宝刷脸，约 2 分钟（免费，不实名不能用）。
-3. 进入控制台 →「API 密钥」→ 创建并复制 Key（形如 `sk-xxx`，**只显示一次，立即复制**）。
-4. 粘贴到 App 设置页的「① 硅基流动 API Key」。
-
-> 费用：所用的 `FunAudioLLM/SenseVoiceSmall` 模型官方标注**永久免费**，日常上课语音转文字不花钱。免费模型速率有限，正常上课够用。
-
-### Key ② DeepSeek（AI 总结，必须）
-1. 打开 <https://platform.deepseek.com> → 注册登录 →「API Keys」→ 创建。
-2. 粘贴到 App 设置页的「② DeepSeek API Key」。
-
-> 两个 Key 都只保存在本机，不会上传。语音识别需要联网。
-
----
-
-## 第 1 步：安装环境（一次性）
-
-需要两个东西：**Flutter SDK**（编译 App 的框架）和 **Android Studio**（提供安卓 SDK 和模拟器）。
-
-### 1.1 安装 Flutter SDK
-
-国内用户建议配置镜像，加速下载：
+### Android
 
 ```bash
-# 到 https://docs.flutter.cn/get-started/install 下载对应系统的 SDK 并解压
-# 假设解压到 ~/flutter，把下面两行加进 ~/.bashrc 或 ~/.zshrc
-export PATH="$HOME/flutter/bin:$PATH"
-export PUB_HOSTED_URL=https://pub.flutter-io.cn
-export FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn
+export JAVA_HOME=/path/to/jdk-21
+export ANDROID_HOME=/path/to/android-sdk
+export PUB_CACHE=/path/to/ascii/pub-cache   # 必须是 ASCII 路径，中文用户名会炸 jni 的 CMake
 
-# 让配置生效
-source ~/.bashrc   # zsh 用户用 source ~/.zshrc
-
-# 检查是否装好（出现版本号即成功）
-flutter --version
-```
-
-### 1.2 安装 Android Studio
-
-1. 到 <https://developer.android.com/studio> 下载安装。
-2. 打开 Android Studio → `More Actions` → `SDK Manager` → 勾选安装：
-   - **Android SDK Platform 34**（或最新版）
-   - **Android SDK Build-Tools**
-   - **Android SDK Command-line Tools**
-3. 同意许可协议：
-
-```bash
-flutter doctor --android-licenses   # 一路输入 y 回车
-```
-
-### 1.3 体检
-
-```bash
-flutter doctor
-```
-
-只要 Android 相关项都打勾（✓）即可。iOS 项不用管（我们先做安卓）。
-
----
-
-## 第 2 步：拉取依赖并运行
-
-在项目根目录执行：
-
-```bash
-cd classnote
-
-# 下载项目依赖（第一次会慢一点）
 flutter pub get
-
-# 连接真机（开启手机"开发者模式 + USB调试"）或启动 Android Studio 模拟器后，查看是否识别到设备
-flutter devices
-
-# 运行到设备/模拟器
-flutter run
+flutter analyze
+flutter test
+flutter build apk --release
 ```
 
-看到 App 界面就说明跑通了。真机测试语音转写效果最准（模拟器可能没有语音服务）。
+产物在 `build/app/outputs/flutter-apk/app-release.apk`。
 
----
+> 构建环境踩过的坑写在 [docs/项目状态快照.md](docs/项目状态快照.md) 的「构建命令」一节，包括 Gradle 镜像位置与签名验证的 JAVA_HOME 写法。
 
-## 第 3 步：打出安卓 APK 安装包
+### iOS
 
-APK 是安卓手机能直接安装的包。分两种：
-
-### 3.1 先打一个测试包（debug，快速验证）
+iOS **必须在 macOS + Xcode 上构建**，Windows 无法产出 IPA：
 
 ```bash
-flutter build apk --debug
+flutter pub get
+cd ios && pod install && cd ..
+open ios/Runner.xcworkspace     # 在 Xcode 里配 Team 与 Bundle Identifier
+flutter build ipa --release      # 或 Xcode → Product → Archive
 ```
 
-产物在 `build/app/outputs/flutter-apk/app-debug.apk`，发到手机安装即可。
+详细步骤与签名说明见 [docs/iOS-构建说明.md](docs/iOS-构建说明.md)。
 
-### 3.2 打正式签名包（release，可分发）
+## 架构
 
-正式包需要用"签名文件"签名，步骤如下：
+```
+lib/
+├── agent/        Function Calling 循环（纯 Dart + http 直连，无框架）
+│   ├── agent_loop.dart        循环、maxSteps 硬上限、结构化日志
+│   ├── correction_agent.dart  纠错子 Agent：查术语表 → 逐条判断 → 标待确认
+│   ├── classroom_agent.dart   顶层编排，按技能收窄提示词与工具
+│   └── terminology_store.dart 术语表按「课程 + 章节」缓存
+├── models/       Note / StudySummary / MindGraph / Textbook / CourseLocation …
+├── services/     AI、ASR、纠错、检索、Wiki、教材、数据库
+├── pages/        首页 / 录音 / 笔记详情 / 设置 / 搜索 / Wiki / 教材
+└── widgets/      画布、导图、Agent 运行面板、位置选择器
+```
 
-**① 生成签名文件（只需做一次）**
+几条关键取舍：
+
+- **Agent 写在 App 内**，不是 Python 服务器。Function Calling 本质是 HTTP+JSON，多一层服务器只会让体验退化。
+- **不用 FTS5**。`sqflite` 走系统 SQLite，厂商 ROM 会裁掉 FTS5；改用普通表自建 bigram 倒排，100% 可用。
+- **教材目录绝不由模型生成**。解析器先走正则，认不出的行丢弃并计数；模型兜底时输出每行都必须能在用户原文里找到，否则丢弃。
+- **总结不按字数裁剪**，按「允许出现哪些章节」的档位白名单控制，避免模型注水或删干货。
+
+## 测试
 
 ```bash
-keytool -genkey -v -keystore ~/classnote-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias classnote
+flutter test                                  # 373 通过 + 29 跳过（跳过的是需 Key 的真实 API 用例）
+DS_KEY=sk-xxx flutter test test/real_api_*.dart   # 真实 API 冒烟
 ```
 
-执行后会问你设密码和填写信息，务必记住 **keystore 密码** 和 **alias 密码**（后面要用）。
+纯逻辑（切词、目录解析、布局几何）、真实 SQL（`sqflite_common_ffi`）、widget（画布手势、位置选择器）分层覆盖。
 
-**② 新建 `android/key.properties` 文件**（内容如下，密码换成你自己的）
+## 目录里的文档
 
-```properties
-storePassword=你的keystore密码
-keyPassword=你的alias密码
-storeFile=/home/你的用户名/classnote-key.jks
-keyAlias=classnote
-```
-
-**③ 修改 `android/app/build.gradle.kts`**（新版 Flutter 用 Kotlin DSL，文件名带 `.kts`）
-
-先在文件顶部 `plugins {` 之前加入读取签名的代码：
-
-```kotlin
-import java.util.Properties
-import java.io.FileInputStream
-
-val keystoreProperties = Properties()
-val keystorePropertiesFile = rootProject.file("key.properties")
-if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
-}
-```
-
-然后在 `android { ... }` 内部、`buildTypes` 之前加入 `signingConfigs`：
-
-```kotlin
-signingConfigs {
-    create("release") {
-        keyAlias = keystoreProperties["keyAlias"] as String
-        keyPassword = keystoreProperties["keyPassword"] as String
-        storeFile = keystoreProperties["storeFile"]?.let { file(it) }
-        storePassword = keystoreProperties["storePassword"] as String
-    }
-}
-```
-
-最后把 `buildTypes` 里 release 的签名从 debug 改为 release：
-
-```kotlin
-buildTypes {
-    release {
-        signingConfig = signingConfigs.getByName("release")
-    }
-}
-```
-
-**④ 打包**
-
-```bash
-flutter build apk --release          # 通用包，兼容所有安卓机
-# 或
-flutter build apk --split-per-abi    # 按 CPU 架构分包，体积更小
-```
-
-产物在 `build/app/outputs/flutter-apk/` 下，把 `app-release.apk` 发到手机安装即可。
-
-> ⚠️ `key.properties` 和 `*.jks` 签名文件=你的 App 身份凭证，**务必备份且不要泄露/上传公开仓库**，丢失后无法给同一 App 更新。
-
----
-
-## 第 4 步：真机安装测试
-
-1. 手机开启「设置 → 关于手机 → 连点版本号 7 次」进入开发者模式。
-2. 打开「开发者选项 → USB 调试」。
-3. 数据线连电脑，把 APK 传到手机点开安装。
-4. 首次安装会提示"允许安装未知来源应用"，选允许。
-5. 打开 App → 允许麦克风权限 → 新建课堂 → 说几句话看是否实时出字 → 完成 → 一键总结。
-
----
-
-## 常见问题排查
-
-| 报错 / 现象 | 原因与解决 |
+| 文档 | 内容 |
 |---|---|
-| `cmdline-tools not found` / `Android license status unknown` | Android Studio 里装 Command-line Tools，再跑 `flutter doctor --android-licenses` |
-| `Gradle build failed` / 卡在 Gradle | 项目目录执行 `flutter clean` 然后 `flutter pub get` 再打包 |
-| 打包报签名相关错误 | 检查 `key.properties` 路径和密码是否正确，alias 是否一致 |
-| 语音识别不出字 / 报 401、403 | 真机测试；确认已授予麦克风权限；确认设置里填了硅基流动 Key 且已完成实名认证 |
-| 一键总结报 `401` | App「设置」里的 API Key 没填或填错 |
-| 一键总结报 `402` / `429` | 账户余额不足 / 请求太快，稍后重试或充值 |
-| 录到一半锁屏后没声了 | 已加 `wakelock_plus`，但部分国产 ROM 仍需在「设置 → 应用 → 课堂笔记 → 电池」里关掉省电限制、并允许自启动。彻底方案是前台服务（见下） |
-| 某段文字显示「〔第 N 段语音识别失败〕」 | 该段重试 3 次仍失败（多为弱网）。点录音页状态条的「重试失败段」补传即可，音频文件有保留 |
-| 老版本升级后 Key 没了 | 不应发生：旧键名 `aliyun_asr_key` 会自动迁移到 `siliconflow_asr_key`。若真遇到，请反馈 |
-| `CocoaPods not installed` | 这是 iOS 才会遇到的，做安卓可忽略 |
+| [docs/项目状态快照.md](docs/项目状态快照.md) | 当前状态、代码地图、数据库演进、已知坑、自检记录 |
+| [docs/DSH-教材检索提示词.md](docs/DSH-教材检索提示词.md) | 教材定位功能的完整规格 |
+| [docs/改造清单-教材检索.md](docs/改造清单-教材检索.md) | 实施记录与偏差 |
+| [docs/DSH-课堂图片笔记提示词.md](docs/DSH-课堂图片笔记提示词.md) | 课堂图片导入的待实现规格 |
+| [docs/iOS-构建说明.md](docs/iOS-构建说明.md) | iOS 打包与签名 |
 
----
+## 已知限制
 
-## 说明与边界
+- 语音识别只走云端，离线不可用；手写板书识别尚未实现（见图片笔记提示词）。
+- 数据库目前 v9，升级分支都带可重入保护，但真机跨版本升级建议先备份。
+- release APK 使用 debug 签名，仅用于侧载测试，不能上架。
+- 术语缓存的完整链路（课前预生成 + 纠错命中）仍在收尾。
 
-- 本指南只做**本地打包**，帮你得到可安装的 APK 文件，不涉及应用商店上架、资质审核、备案等。
-- iOS（IPA）需要苹果开发者账号（¥688/年）或 TestFlight 才能安装，且必须在 macOS + Xcode 环境打包，本 App 代码已兼容双端，届时可直接构建。
-- App 内 AI 总结会联网调用 DeepSeek，产生少量 API 费用（按字数计费，很便宜）；语音转文字走硅基流动 SenseVoiceSmall 模型，永久免费。两者都需联网。
+## 许可
 
-### 已知限制
+[MIT](LICENSE)。可以自由使用、修改、商用；如果它帮到了你，欢迎回来说一声。
 
-- **锁屏录制**：已接前台服务 + 常驻通知，理论上可覆盖锁屏长时间录制。但部分国产 ROM（MIUI/EMUI/ColorOS 等）仍可能额外杀后台，建议在「设置 → 应用 → 课堂笔记 → 电池」里关掉省电限制、并允许自启动。真机验证前请先按 [优化改动说明.md](./优化改动说明.md) 第四节走一遍。
-- **上传流量**：每 60 秒一段 wav ≈ 1.9MB，一小时约 115MB。改用 AAC 可降到 1/5，但**必须先验证 SenseVoiceSmall 接受 m4a 容器**，否则会把"能转"变成"全转不了"，本次未改。
-- **导图导出**：已做 pixelRatio 自适应防 OOM，但极长导图（超过 4000 逻辑像素）在低端机上仍可能偏慢。
-- **构建环境**：本机为了关掉 Kotlin 增量编译缓存报错，在 `android/gradle.properties` 里设了 `kotlin.incremental=false`，编译会慢一点（约 115 秒）但稳定。
+项目里的第三方服务（DeepSeek、硅基流动）由使用者自行申请与付费，与本仓库无关。

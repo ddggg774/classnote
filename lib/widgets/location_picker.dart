@@ -52,6 +52,7 @@ class LocationPickerSheet extends StatefulWidget {
 
 class _LocationPickerSheetState extends State<LocationPickerSheet> {
   late final TextbookService _service = widget.service ?? TextbookService();
+  final TextEditingController _searchCtrl = TextEditingController();
 
   List<Textbook> _books = const [];
   Textbook? _book;
@@ -60,12 +61,30 @@ class _LocationPickerSheetState extends State<LocationPickerSheet> {
   Chapter? _chapter;
   Section? _section;
   final Set<String> _expanded = {};
+  String _query = '';
   bool _loading = true;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 有搜索词时按章名或节名过滤；没有搜索词就全量。
+  List<Chapter> get _visibleChapters {
+    final q = _query.trim();
+    if (q.isEmpty) return _chapters;
+    return _chapters.where((c) {
+      if (c.displayName.contains(q)) return true;
+      return (_sections[c.id] ?? const <Section>[])
+          .any((s) => s.displayName.contains(q));
+    }).toList();
   }
 
   Future<void> _load() async {
@@ -232,13 +251,48 @@ class _LocationPickerSheetState extends State<LocationPickerSheet> {
             else if (_chapters.isEmpty)
               _buildNoToc()
             else ...[
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  children: [
-                    for (final c in _chapters) _buildChapter(c),
-                  ],
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+                child: TextField(
+                  controller: _searchCtrl,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: '搜索章节，如「木兰科」',
+                    isDense: true,
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.close, size: 16),
+                            onPressed: () {
+                              _searchCtrl.clear();
+                              setState(() => _query = '');
+                            },
+                          ),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onChanged: (v) => setState(() => _query = v.trim()),
                 ),
+              ),
+              Expanded(
+                child: _visibleChapters.isEmpty
+                    ? Center(
+                        child: Text(
+                          '没有匹配的章节',
+                          style: TextStyle(
+                              fontSize: 13, color: Colors.grey.shade600),
+                        ),
+                      )
+                    : ListView(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        children: [
+                          for (final c in _visibleChapters) _buildChapter(c),
+                        ],
+                      ),
               ),
               _buildFooter(),
             ],
@@ -296,9 +350,16 @@ class _LocationPickerSheetState extends State<LocationPickerSheet> {
   }
 
   Widget _buildChapter(Chapter chapter) {
-    final sections = _sections[chapter.id] ?? const <Section>[];
+    final q = _query.trim();
+    final searching = q.isNotEmpty;
+    final allSections = _sections[chapter.id] ?? const <Section>[];
+    final chapterMatches = !searching || chapter.displayName.contains(q);
+    final sections = (!searching || chapterMatches)
+        ? allSections
+        : allSections.where((s) => s.displayName.contains(q)).toList();
     final selected = _chapter?.id == chapter.id;
-    final expanded = _expanded.contains(chapter.id);
+    // 搜索时直接把命中项展开，省得用户还要再点一下
+    final expanded = searching ? sections.isNotEmpty : _expanded.contains(chapter.id);
     return Column(
       children: [
         ListTile(

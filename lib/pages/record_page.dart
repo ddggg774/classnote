@@ -475,29 +475,30 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     final finalText = result.finalText ?? originalText;
     final summaryJson = _buildSummaryJson(result);
 
-    if (_draftId != null) {
-      final existing = await _db.queryById(_draftId!);
-      if (existing != null) {
-        await _db.update(existing.copyWith(
-          title: title,
-          transcript: finalText,
-          summaryJson: summaryJson,
-          duration: _asr.recordedSeconds,
-          status: Note.statusDone,
-          course: _course,
-          textbookId: _textbook?.id,
-          chapterNo: _chapter?.no,
-          chapterTitle: _chapter?.title,
-          sectionNo: _section?.no,
-          sectionTitle: _section?.title,
-          // 位置被清空时 copyWith 的 null 等于「不修改」，必须显式声明清除
-          clearLocation: _textbook == null,
-          clearPosition: _chapter == null,
-          // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
-          clearCourse: (_course ?? '').trim().isEmpty,
-        ));
-      }
+    final existing = _draftId == null ? null : await _db.queryById(_draftId!);
+
+    if (existing != null) {
+      await _db.update(existing.copyWith(
+        title: title,
+        transcript: finalText,
+        summaryJson: summaryJson,
+        duration: _asr.recordedSeconds,
+        status: Note.statusDone,
+        course: _course,
+        textbookId: _textbook?.id,
+        chapterNo: _chapter?.no,
+        chapterTitle: _chapter?.title,
+        sectionNo: _section?.no,
+        sectionTitle: _section?.title,
+        // 位置被清空时 copyWith 的 null 等于「不修改」，必须显式声明清除
+        clearLocation: _textbook == null,
+        clearPosition: _chapter == null,
+        // 取消选课程后保存：copyWith 的 null 是「不修改」，课程会一直挂着旧值
+        clearCourse: (_course ?? '').trim().isEmpty,
+      ));
     } else {
+      // 草稿为空（用户直接贴文本进来）或者处理期间被别处删掉了：
+      // 结果不能静默丢，另存一条新笔记——白跑一趟 Agent 比多一条记录更难受。
       await _db.insert(Note(
         id: const Uuid().v4(),
         title: title,

@@ -72,7 +72,9 @@ class Note {
   bool get hasLocation =>
       (textbookId ?? '').trim().isNotEmpty ||
       (chapterNo ?? '').trim().isNotEmpty ||
-      (chapterTitle ?? '').trim().isNotEmpty;
+      (chapterTitle ?? '').trim().isNotEmpty ||
+      (sectionNo ?? '').trim().isNotEmpty ||
+      (sectionTitle ?? '').trim().isNotEmpty;
 
   /// 章节唯一键（与 CourseLocation.chapterKey 同一套拼法）。
   /// 术语缓存与提示词都用它，不要再自己拼。

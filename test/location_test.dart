@@ -6,7 +6,14 @@
 // 它同时是术语缓存键和提示词里的章节，拼错了缓存永远命中不了，而且没人会发现。
 
 import 'package:material_ui/material_ui.dart'
-    show Builder, Center, ElevatedButton, MaterialApp, Scaffold, Text;
+    show
+        Builder,
+        Center,
+        ElevatedButton,
+        MaterialApp,
+        Scaffold,
+        Text,
+        TextField;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -143,6 +150,19 @@ void main() {
       expect(cleared.hasLocation, isFalse);
     });
 
+    test('只有节字段也算有位置（老数据可能只记了节）', () {
+      final onlySection = Note.fromMap({
+        'id': 'n-sec',
+        'title': '课堂',
+        'transcript': '',
+        'created_at': 0,
+        'section_no': '第二节',
+        'section_title': '木兰科',
+      });
+      expect(onlySection.hasLocation, isTrue);
+      expect(onlySection.chapterKey, '第二节 木兰科');
+    });
+
     test('copyWith：clearCourse 能真的清空课程（否则取消选择后永远挂着旧课）', () {
       final note = makeNote();
       final cleared = note.copyWith(clearCourse: true);
@@ -215,7 +235,7 @@ void main() {
       expect(loc.chapterKey, '');
     });
 
-    test('教材被删：靠课程名模糊匹配回来（会命中另一本同课教材）', () async {
+    test('教材被删且没有别的同课教材：降级为空，不报错', () async {
       final data = await prepareToc();
       await service.delete(data.book.id);
       final loc = await service.resolve(
@@ -224,9 +244,38 @@ void main() {
         chapterNo: '第五章',
         chapterTitle: '被子植物',
       );
-      // 种子被删后这门课没有教材了，matchCourse 应返回 null 而不是抛错
       expect(loc.textbook, isNull);
       expect(loc.chapter, isNull);
+    });
+
+    test('教材被删后不再按课程猜另一本（避免挂到别的版本的同名章）', () async {
+      final data = await prepareToc();
+      // 同课程再来一本，目录里恰好有同名章——如果仍按课程模糊匹配，就会错误挂到它上面
+      final second = Textbook(
+        id: 't-experiment',
+        course: '植物学',
+        title: '植物学实验指导',
+        edition: '第一版',
+      );
+      await service.save(second);
+      await service.saveToc(
+        second.id,
+        TocParser.parse('第五章 被子植物\n  第一节 木兰科'),
+        source: Textbook.tocManual,
+      );
+      await service.delete(data.book.id);
+
+      final loc = await service.resolve(
+        course: '植物学',
+        textbookId: data.book.id, // 用户当初选的那本已经没了
+        chapterNo: '第五章',
+        chapterTitle: '被子植物',
+        sectionNo: '第一节',
+        sectionTitle: '木兰科',
+      );
+      expect(loc.textbook, isNull);
+      expect(loc.chapter, isNull);
+      expect(loc.chapterKey, '');
     });
 
     test('sectionMapOf 一条 JOIN 取全书的节', () async {
@@ -376,6 +425,38 @@ void main() {
       expect(picked, isNotNull);
       expect(picked!.hasPosition, isFalse);
       expect(picked!.chapterKey, '');
+    });
+  testWidgets('搜索按节名过滤并自动展开命中章', (tester) async {
+      final section2 = Section(
+        id: 's2',
+        chapterId: chapter.id,
+        no: '第三节',
+        title: '蔷薇科',
+      );
+      final fake = _FakeTextbookService(
+        books: [botanyBook],
+        chapters: [chapter],
+        sections: {
+          chapter.id: [section, section2],
+        },
+      );
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LocationPickerSheet(course: '植物学', service: fake),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      // 默认不展开，节不可见
+      expect(find.text('第二节 木兰科'), findsNothing);
+
+      await tester.enterText(find.byType(TextField), '木兰');
+      await tester.pumpAndSettle();
+      expect(find.text('第二节 木兰科'), findsOneWidget);
+      expect(find.text('第三节 蔷薇科'), findsNothing);
+
+      await tester.enterText(find.byType(TextField), '课程表');
+      await tester.pumpAndSettle();
+      expect(find.text('没有匹配的章节'), findsOneWidget);
     });
   });
 }

@@ -156,9 +156,14 @@ class TextbookService {
     Textbook? book;
     final id = (textbookId ?? '').trim();
     if (id.isNotEmpty) {
+      // 明确记过是哪本教材，就一定按那本来。找不到就只显示课程——
+      // 不能再按课程名去猜一本，否则会把章节挂到另一个版本的同名章上，
+      // 用户看到的是「第五章 被子植物」，实际对应的可能不是他用那本书。
       book = await byId(id);
+    } else {
+      // 老笔记没有 textbook_id，只能按课程模糊匹配
+      book = await matchCourse(c);
     }
-    book ??= await matchCourse(c);
 
     Chapter? chapter;
     Section? section;
