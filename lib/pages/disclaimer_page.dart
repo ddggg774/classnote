@@ -138,7 +138,18 @@ class _DisclaimerPageState extends State<DisclaimerPage> {
   Future<void> _accept() async {
     if (_saving) return;
     setState(() => _saving = true);
-    await SettingsService().acceptDisclaimer(Disclaimer.version);
+    try {
+      await SettingsService().acceptDisclaimer(Disclaimer.version);
+    } catch (_) {
+      // 本地存储写失败（极少数机型/空间不足）：不能假装签过了，
+      // 否则下次启动又会弹，用户会以为"签了没用"
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('保存同意记录失败，请重试')),
+      );
+      return;
+    }
     if (!mounted) return;
     widget.onAccepted();
   }
@@ -256,7 +267,7 @@ class _DisclaimerPageState extends State<DisclaimerPage> {
                           children: [
                             Expanded(
                               child: OutlinedButton(
-                                onPressed: _refuse,
+                                onPressed: _saving ? null : _refuse,
                                 child: const Text('不同意'),
                               ),
                             ),

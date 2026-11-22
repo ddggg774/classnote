@@ -60,10 +60,16 @@ class _StartupGateState extends State<StartupGate> {
   }
 
   Future<void> _check() async {
-    final ok =
-        await SettingsService().hasAcceptedDisclaimer(Disclaimer.version);
+    // 读本地记录失败时按「未同意」处理：宁可多问一次，也不能绕过告知
+    var accepted = false;
+    try {
+      accepted =
+          await SettingsService().hasAcceptedDisclaimer(Disclaimer.version);
+    } catch (_) {
+      accepted = false;
+    }
     if (!mounted) return;
-    setState(() => _accepted = ok);
+    setState(() => _accepted = accepted);
   }
 
   @override
