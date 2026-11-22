@@ -31,8 +31,10 @@ class DbService {
   /// v6 = 新增 search_terms 表（中文 bigram 倒排索引，用于跨笔记检索）；
   /// v7 = 新增 wiki_entries 与 wiki_sources 表（课程级知识库词条）；
   /// v8 = 新增 textbooks / chapters / sections 表（教材库与章节目录），
-  ///      并把 config.dart 里三本教材的元数据灌成种子（只灌一次）。
-  static const int dbVersion = 8;
+  ///      并把 config.dart 里三本教材的元数据灌成种子（只灌一次）；
+  /// v9 = notes 增加五个位置字段（textbook_id / chapter_no / chapter_title /
+  ///      section_no / section_title），记录这节课的教材位置。老笔记留空。
+  static const int dbVersion = 9;
 
   Database? _db;
 
@@ -84,7 +86,12 @@ class DbService {
             status TEXT NOT NULL DEFAULT 'done',
             terminology_json TEXT,
             course TEXT,
-            template_id TEXT
+            template_id TEXT,
+            textbook_id TEXT,
+            chapter_no TEXT,
+            chapter_title TEXT,
+            section_no TEXT,
+            section_title TEXT
           )
         ''');
         await _createTerminologyCache(db);
@@ -129,6 +136,14 @@ class DbService {
         }
         if (oldVersion < 8) {
           await _createTextbookTables(db);
+        }
+        if (oldVersion < 9) {
+          // 老笔记这五列留空：读的时候不显示位置块，不做数据迁移、不猜
+          await _addColumnIfMissing(db, 'notes', 'textbook_id', 'TEXT');
+          await _addColumnIfMissing(db, 'notes', 'chapter_no', 'TEXT');
+          await _addColumnIfMissing(db, 'notes', 'chapter_title', 'TEXT');
+          await _addColumnIfMissing(db, 'notes', 'section_no', 'TEXT');
+          await _addColumnIfMissing(db, 'notes', 'section_title', 'TEXT');
         }
       },
       ),

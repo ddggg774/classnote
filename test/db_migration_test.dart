@@ -1,11 +1,13 @@
-// test/db_migration_v8_test.dart
-// v7 → v8 迁移的真实测试。
+// test/db_migration_test.dart
+// v7 → 当前版本（v9）迁移的真实测试。
 //
 // 为什么单独测：db_service.dart 开头那段警告不是摆设——改 version 却漏了
 // onUpgrade，已装机用户升级后打开就是 "no such column" 白屏。
-// 这里用一个真的 v7 库文件走一遍升级，验证两件事：
+// 这里用一个真的 v7 库文件走一遍升级，验证四件事：
 //   ① 老笔记还在（没有被重建库顺手清掉）；
-//   ② 教材三表建好且种子灌了一次，重复打开不会重复灌。
+//   ② 教材三表建好且种子灌了一次，重复打开不会重复灌；
+//   ③ notes 多了五个位置字段，老笔记读出来是空位置而不是报错；
+//   ④ 老笔记能正常做「有没有位置」的判断（hasLocation = false）。
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -82,6 +84,29 @@ void main() {
     expect(note, isNotNull);
     expect(note!.title, '植物学 第三讲');
     expect(note.effectiveCourse, '植物学');
+  });
+
+  test('升级到 v9 后 notes 多了五个位置字段，老笔记读出来是空位置', () async {
+    final db = await DbService().database;
+    final info = await db.rawQuery('PRAGMA table_info(notes)');
+    final columns = info.map((r) => r['name']).toSet();
+    expect(
+      columns,
+      containsAll([
+        'textbook_id',
+        'chapter_no',
+        'chapter_title',
+        'section_no',
+        'section_title',
+      ]),
+    );
+
+    final note = await DbService().queryById('old-note');
+    expect(note!.textbookId, isNull);
+    expect(note.chapterNo, isNull);
+    expect(note.sectionTitle, isNull);
+    expect(note.hasLocation, isFalse);
+    expect(note.chapterKey, '');
   });
 
   test('升级后教材三表建好并灌入三本种子', () async {

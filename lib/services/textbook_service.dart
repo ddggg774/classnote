@@ -6,6 +6,7 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
+import '../models/course_location.dart';
 import '../models/textbook.dart';
 import 'db_service.dart';
 import 'toc_parser.dart';
@@ -115,6 +116,102 @@ class TextbookService {
       orderBy: 'sort_order ASC',
     );
     return rows.map(Section.fromMap).toList();
+  }
+
+  /// 整本书的节，按 chapterId 分组。
+  ///
+  /// 目录选择器要用：一本书有十几章上百节，逐章查是 N 次往返，
+  /// 一条 JOIN 拿全更省事。
+  Future<Map<String, List<Section>>> sectionMapOf(String textbookId) async {
+    final db = await _db.database;
+    final rows = await db.rawQuery(
+      'SELECT s.* FROM sections s '
+      'JOIN chapters c ON s.chapter_id = c.id '
+      'WHERE c.textbook_id = ? '
+      'ORDER BY s.sort_order ASC',
+      [textbookId],
+    );
+    final out = <String, List<Section>>{};
+    for (final r in rows) {
+      final s = Section.fromMap(r);
+      out.putIfAbsent(s.chapterId, () => []).add(s);
+    }
+    return out;
+  }
+
+  /// 用笔记里存的五个字段还原出可用的位置对象。
+  ///
+  /// 教材可能已经被删、目录可能被重录过——那就逐级降级：
+  /// 找不到章节就只显示教材，找不到教材就只剩课程。绝不抛异常，
+  /// 详情页打开的是一条老笔记，不该因为教材没了就打不开。
+  Future<CourseLocation> resolve({
+    required String course,
+    String? textbookId,
+    String? chapterNo,
+    String? chapterTitle,
+    String? sectionNo,
+    String? sectionTitle,
+  }) async {
+    final c = course.trim();
+    Textbook? book;
+    final id = (textbookId ?? '').trim();
+    if (id.isNotEmpty) {
+      book = await byId(id);
+    }
+    book ??= await matchCourse(c);
+
+    Chapter? chapter;
+    Section? section;
+    if (book != null) {
+      final chapters = await chaptersOf(book.id);
+      chapter = _matchChapter(chapters, chapterNo, chapterTitle);
+      final sNo = (sectionNo ?? '').trim();
+      final sTitle = (sectionTitle ?? '').trim();
+      if (chapter != null && (sNo.isNotEmpty || sTitle.isNotEmpty)) {
+        section = _matchSection(await sectionsOf(chapter.id), sectionNo, sectionTitle);
+      }
+    }
+
+    return CourseLocation(
+      course: c,
+      textbook: book,
+      chapter: chapter,
+      section: section,
+    );
+  }
+
+  static Chapter? _matchChapter(
+      List<Chapter> list, String? no, String? title) {
+    final n = (no ?? '').trim();
+    final t = (title ?? '').trim();
+    if (n.isEmpty && t.isEmpty) return null;
+    for (final c in list) {
+      if (c.no.trim() == n && c.title.trim() == t) return c;
+    }
+    for (final c in list) {
+      if (t.isNotEmpty && c.title.trim() == t) return c;
+    }
+    for (final c in list) {
+      if (n.isNotEmpty && c.no.trim() == n) return c;
+    }
+    return null;
+  }
+
+  static Section? _matchSection(
+      List<Section> list, String? no, String? title) {
+    final n = (no ?? '').trim();
+    final t = (title ?? '').trim();
+    if (n.isEmpty && t.isEmpty) return null;
+    for (final s in list) {
+      if (s.no.trim() == n && s.title.trim() == t) return s;
+    }
+    for (final s in list) {
+      if (t.isNotEmpty && s.title.trim() == t) return s;
+    }
+    for (final s in list) {
+      if (n.isNotEmpty && s.no.trim() == n) return s;
+    }
+    return null;
   }
 
   /// 整本目录读成解析结构（编辑页保存时也用它做全量覆盖）

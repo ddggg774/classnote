@@ -9,6 +9,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../models/course_location.dart';
 import '../models/mind_graph.dart';
 import '../models/note.dart';
 import '../models/note_template.dart';
@@ -19,6 +20,7 @@ import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
 import '../services/pending_fixer.dart';
 import '../services/template_service.dart';
+import '../services/textbook_service.dart';
 import '../services/tree_layout.dart';
 import '../services/wiki_service.dart';
 import '../services/ai_service.dart';
@@ -27,6 +29,7 @@ import '../services/terminology_service.dart';
 import '../services/transcript_corrector.dart';
 import '../models/terminology.dart';
 import '../widgets/graph_canvas.dart';
+import '../widgets/location_picker.dart';
 import '../widgets/mind_graph_tree.dart';
 import '../widgets/mind_map_widget.dart';
 
@@ -50,7 +53,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   final AiService _ai = AiService();
   final TranscriptCorrector _corrector = TranscriptCorrector();
   final TerminologyService _terminologyService = TerminologyService();
+  final TextbookService _textbookService = TextbookService();
   final TextEditingController _transcriptController = TextEditingController();
+
+  /// 这条笔记对应的教材位置。老笔记为空，位置块整块不渲染。
+  CourseLocation _location = CourseLocation.empty;
 
   /// 正在做术语准备或质量校准
   bool _correcting = false;
@@ -149,6 +156,109 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               : null) ??
           TemplateService.recommendFor(note.effectiveCourse);
     });
+    await _loadLocation(note);
+  }
+
+  /// 课程名：只有结构化 course 才算数。老笔记的 title 常是「11月22日第三讲」，
+  /// 拿它当课程去匹配教材只会匹配出错误结果。
+  String get _courseForLocation {
+    final note = _note;
+    if (note == null) return '';
+    return (note.course ?? '').trim().isNotEmpty ? note.effectiveCourse : '';
+  }
+
+  /// 还原位置。教材/目录被改过也能逐级降级，不抛异常。
+  Future<void> _loadLocation(Note note) async {
+    final course = _courseForLocation;
+    if (course.isEmpty || !note.hasLocation) {
+      if (!mounted) return;
+      setState(() => _location = CourseLocation(course: course));
+      return;
+    }
+    final loc = await _textbookService.resolve(
+      course: course,
+      textbookId: note.textbookId,
+      chapterNo: note.chapterNo,
+      chapterTitle: note.chapterTitle,
+      sectionNo: note.sectionNo,
+      sectionTitle: note.sectionTitle,
+    );
+    if (!mounted) return;
+    setState(() => _location = loc);
+  }
+
+  /// 事后修改位置：选错了能改回来，比重新建笔记现实得多。
+  Future<void> _editLocation() async {
+    final note = _note;
+    final course = _courseForLocation;
+    if (note == null) return;
+    if (course.isEmpty) {
+      _showSnack('这条笔记没有课程名，无法定位教材章节');
+      return;
+    }
+    final result = await showLocationPicker(
+      context,
+      course: course,
+      initial: _location,
+    );
+    if (result == null || !mounted) return;
+
+    final hasTextbook = result.textbook != null;
+    final hasPosition = result.hasPosition;
+    final updated = note.copyWith(
+      textbookId: result.textbook?.id,
+      chapterNo: result.chapter?.no,
+      chapterTitle: result.chapter?.title,
+      sectionNo: result.section?.no,
+      sectionTitle: result.section?.title,
+      // null 在 copyWith 里表示「不修改」，清空必须显式声明
+      clearLocation: !hasTextbook,
+      clearPosition: !hasPosition,
+    );
+    await _db.update(updated);
+    if (!mounted) return;
+    setState(() => _note = updated);
+    await _loadLocation(updated);
+  }
+
+  /// 位置条：有位置才显示；老笔记不出现空块。
+  Widget _buildLocationBar() {
+    final line = _location.displayLine;
+    if (line.isEmpty) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.indigo.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.indigo.shade100),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.place_outlined, size: 16, color: Colors.indigo.shade600),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              line,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 12, height: 1.35, color: Colors.indigo.shade900),
+            ),
+          ),
+          TextButton(
+            onPressed: _editLocation,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('修改位置', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
   }
 
   /// 先选档位，再生成。
@@ -467,6 +577,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                           TextStyle(color: Colors.indigo.shade900, fontSize: 12),
                     ),
                   ),
+                _buildLocationBar(),
                 Expanded(
                   child: IndexedStack(
                     index: _tabIndex,
@@ -1077,9 +1188,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     final note = _note;
     if (note == null || _preparing) return;
 
-    final courseCtrl = TextEditingController(text: note.title);
-    final topicCtrl = TextEditingController();
-    final materialCtrl = TextEditingController();
+    final courseCtrl = TextEditingController(
+        text: _courseForLocation.isNotEmpty ? _courseForLocation : note.title);
+    // 位置已经记在笔记里时，章节与教材名直接带出来，别让用户再手打一遍
+    final topicCtrl = TextEditingController(text: _location.chapterKey);
+    final materialCtrl = TextEditingController(text: _location.materialLine);
     final knownCtrl = TextEditingController();
 
     final ok = await showDialog<bool>(

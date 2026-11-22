@@ -27,6 +27,16 @@ class Note {
   /// 生成总结时使用的模板 ID，空表示九段式
   final String? templateId;
 
+  /// 这次录音对应的教材位置（v9 加的五个字段，老笔记全为空）。
+  ///
+  /// 章号/节号存原文（「第五章」「第二节」），不拼成一个字符串——
+  /// 将来要按章分组、按节排序都得靠结构化字段。
+  final String? textbookId;
+  final String? chapterNo;
+  final String? chapterTitle;
+  final String? sectionNo;
+  final String? sectionTitle;
+
   Note({
     required this.id,
     required this.title,
@@ -38,6 +48,11 @@ class Note {
     this.terminologyJson,
     this.course,
     this.templateId,
+    this.textbookId,
+    this.chapterNo,
+    this.chapterTitle,
+    this.sectionNo,
+    this.sectionTitle,
   });
 
   /// 是否已生成总结
@@ -53,6 +68,29 @@ class Note {
   /// 是否是「还没点完成」的草稿（崩溃/误退后可在首页继续）
   bool get isDraft => status == statusDraft;
 
+  /// 这条笔记有没有记下教材位置。老笔记为 false，详情页据此决定要不要显示位置块。
+  bool get hasLocation =>
+      (textbookId ?? '').trim().isNotEmpty ||
+      (chapterNo ?? '').trim().isNotEmpty ||
+      (chapterTitle ?? '').trim().isNotEmpty;
+
+  /// 章节唯一键（与 CourseLocation.chapterKey 同一套拼法）。
+  /// 术语缓存与提示词都用它，不要再自己拼。
+  String get chapterKey {
+    final parts = <String>[];
+    final cNo = (chapterNo ?? '').trim();
+    final cTitle = (chapterTitle ?? '').trim();
+    if (cNo.isNotEmpty || cTitle.isNotEmpty) {
+      parts.add([cNo, cTitle].where((s) => s.isNotEmpty).join(' '));
+    }
+    final sNo = (sectionNo ?? '').trim();
+    final sTitle = (sectionTitle ?? '').trim();
+    if (sNo.isNotEmpty || sTitle.isNotEmpty) {
+      parts.add([sNo, sTitle].where((s) => s.isNotEmpty).join(' '));
+    }
+    return parts.join(' ');
+  }
+
   /// 数据库 -> 对象
   factory Note.fromMap(Map<String, dynamic> map) {
     return Note(
@@ -67,6 +105,12 @@ class Note {
       terminologyJson: map['terminology_json'] as String?,
       course: map['course'] as String?,
       templateId: map['template_id'] as String?,
+      // v9 之前的老库没有这五列，缺列时当作 null（不显示位置即可）
+      textbookId: map['textbook_id'] as String?,
+      chapterNo: map['chapter_no'] as String?,
+      chapterTitle: map['chapter_title'] as String?,
+      sectionNo: map['section_no'] as String?,
+      sectionTitle: map['section_title'] as String?,
     );
   }
 
@@ -83,6 +127,11 @@ class Note {
       'terminology_json': terminologyJson,
       'course': course,
       'template_id': templateId,
+      'textbook_id': textbookId,
+      'chapter_no': chapterNo,
+      'chapter_title': chapterTitle,
+      'section_no': sectionNo,
+      'section_title': sectionTitle,
     };
   }
 
@@ -103,6 +152,13 @@ class Note {
     String? course,
     bool clearCourse = false,
     String? templateId,
+    String? textbookId,
+    String? chapterNo,
+    String? chapterTitle,
+    String? sectionNo,
+    String? sectionTitle,
+    bool clearLocation = false,
+    bool clearPosition = false,
   }) {
     return Note(
       id: id,
@@ -117,6 +173,17 @@ class Note {
           : (terminologyJson ?? this.terminologyJson),
       course: clearCourse ? null : (course ?? this.course),
       templateId: templateId ?? this.templateId,
+      textbookId: clearLocation ? null : (textbookId ?? this.textbookId),
+      chapterNo:
+          (clearLocation || clearPosition) ? null : (chapterNo ?? this.chapterNo),
+      chapterTitle: (clearLocation || clearPosition)
+          ? null
+          : (chapterTitle ?? this.chapterTitle),
+      sectionNo:
+          (clearLocation || clearPosition) ? null : (sectionNo ?? this.sectionNo),
+      sectionTitle: (clearLocation || clearPosition)
+          ? null
+          : (sectionTitle ?? this.sectionTitle),
     );
   }
 }

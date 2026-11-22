@@ -15,18 +15,22 @@ import 'package:material_ui/material_ui.dart';
 import 'package:uuid/uuid.dart';
 
 import '../agent/classroom_agent.dart';
+import '../models/course_location.dart';
 import '../models/mind_graph.dart';
 import '../config.dart';
 import '../models/note.dart';
 import '../models/study_note.dart';
 import '../models/summary_level.dart';
 import '../models/terminology.dart';
+import '../models/textbook.dart';
 import '../services/cloud_asr_service.dart';
 import '../services/db_service.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
 import '../services/template_service.dart';
+import '../services/textbook_service.dart';
 import '../widgets/agent_run_sheet.dart';
+import '../widgets/location_picker.dart';
 
 class RecordPage extends StatefulWidget {
   const RecordPage({super.key, this.draftId});
@@ -47,6 +51,20 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
   /// 模板匹配、术语表检索都依赖它，所以值得单独一个字段而不是从标题猜。
   String? _course;
   final TextEditingController _transcriptController = TextEditingController();
+
+  /// 这节课的位置（教材 → 章 → 节）。没选就是空的，下游全部拿不到章节，
+  /// 行为与改造前一模一样——这是「允许跳过」的实现方式。
+  Textbook? _textbook;
+  Chapter? _chapter;
+  Section? _section;
+  final TextbookService _textbookService = TextbookService();
+
+  CourseLocation get _location => CourseLocation(
+        course: _course ?? '',
+        textbook: _textbook,
+        chapter: _chapter,
+        section: _section,
+      );
 
   /// 正在等待「停止 → 最后一段识别完成」的收尾过程
   bool _recognizing = false;
@@ -82,6 +100,23 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     _course = note.course;
     _transcriptController.text = note.transcript;
     _lastSavedTranscript = note.transcript;
+
+    // 位置：老的草稿没有这五个字段，hasLocation 为 false 就跳过，
+    // 不猜、不报错。教材被删过也没关系，resolve 会逐级降级。
+    if ((note.course ?? '').trim().isNotEmpty && note.hasLocation) {
+      final loc = await _textbookService.resolve(
+        course: note.effectiveCourse,
+        textbookId: note.textbookId,
+        chapterNo: note.chapterNo,
+        chapterTitle: note.chapterTitle,
+        sectionNo: note.sectionNo,
+        sectionTitle: note.sectionTitle,
+      );
+      if (!mounted) return;
+      _textbook = loc.textbook;
+      _chapter = loc.chapter;
+      _section = loc.section;
+    }
     setState(() {});
   }
 
@@ -133,6 +168,12 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         createdAt: DateTime.now(),
         duration: _asr.recordedSeconds,
         status: Note.statusDraft,
+        course: _course,
+        textbookId: _textbook?.id,
+        chapterNo: _chapter?.no,
+        chapterTitle: _chapter?.title,
+        sectionNo: _section?.no,
+        sectionTitle: _section?.title,
       ));
     } else {
       final existing = await _db.queryById(_draftId!);
@@ -141,6 +182,16 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         title: title,
         transcript: text,
         duration: _asr.recordedSeconds,
+        // 课程与位置也要跟着草稿落库：否则杀进程后恢复出来的是「无课程草稿」
+        course: _course,
+        textbookId: _textbook?.id,
+        chapterNo: _chapter?.no,
+        chapterTitle: _chapter?.title,
+        sectionNo: _section?.no,
+        sectionTitle: _section?.title,
+        // 清空位置后 copyWith 的 null 是「不修改」，必须显式清
+        clearLocation: _textbook == null,
+        clearPosition: _chapter == null,
       ));
     }
     _lastSavedTranscript = text;
@@ -307,7 +358,7 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
             courseName: (_course ?? '').trim().isNotEmpty
                 ? _course!.trim()
                 : title,
-            chapter: '',
+            chapter: _location.chapterKey,
             level: options.level,
             existingTranscript: text,
             wantMindMap: options.wantMindMap,
@@ -432,6 +483,14 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           duration: _asr.recordedSeconds,
           status: Note.statusDone,
           course: _course,
+          textbookId: _textbook?.id,
+          chapterNo: _chapter?.no,
+          chapterTitle: _chapter?.title,
+          sectionNo: _section?.no,
+          sectionTitle: _section?.title,
+          // 位置被清空时 copyWith 的 null 等于「不修改」，必须显式声明清除
+          clearLocation: _textbook == null,
+          clearPosition: _chapter == null,
         ));
       }
     } else {
@@ -444,6 +503,11 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         duration: _asr.recordedSeconds,
         status: Note.statusDone,
         course: _course,
+        textbookId: _textbook?.id,
+        chapterNo: _chapter?.no,
+        chapterTitle: _chapter?.title,
+        sectionNo: _section?.no,
+        sectionTitle: _section?.title,
       ));
     }
 
@@ -562,6 +626,14 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
           duration: _asr.recordedSeconds,
           status: Note.statusDone,
           course: _course,
+          textbookId: _textbook?.id,
+          chapterNo: _chapter?.no,
+          chapterTitle: _chapter?.title,
+          sectionNo: _section?.no,
+          sectionTitle: _section?.title,
+          // 位置被清空时 copyWith 的 null 等于「不修改」，必须显式声明清除
+          clearLocation: _textbook == null,
+          clearPosition: _chapter == null,
         ));
       }
     } else {
@@ -573,9 +645,106 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         duration: _asr.recordedSeconds,
         status: Note.statusDone,
         course: _course,
+        textbookId: _textbook?.id,
+        chapterNo: _chapter?.no,
+        chapterTitle: _chapter?.title,
+        sectionNo: _section?.no,
+        sectionTitle: _section?.title,
       ));
     }
     if (mounted) Navigator.of(context).pop();
+  }
+
+  /// 位置条：录音前定「教材 → 章 → 节」。
+  ///
+  /// 为什么常驻在课程选择器下面：上课时用户可能赶时间，需要一眼看到
+  /// 「今天定位到哪」，也需要能随时改。不选时这里只是一行浅灰提示，
+  /// 不挡路——跳过定位直接录音的行为与改造前完全一致。
+  Widget _buildLocationBar() {
+    final loc = _location;
+    final hasPosition = loc.hasPosition;
+    final courseChosen = (_course ?? '').trim().isNotEmpty;
+    final hint = !courseChosen
+        ? '选课程后可定位到教材章节'
+        : hasPosition
+            ? loc.displayLine
+            : '未选章节（可跳过）';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      decoration: BoxDecoration(
+        color: hasPosition ? Colors.indigo.shade50 : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: hasPosition ? Colors.indigo.shade100 : Colors.grey.shade300,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.place_outlined,
+            size: 16,
+            color: hasPosition ? Colors.indigo.shade600 : Colors.grey.shade500,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              hint,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.35,
+                color: hasPosition
+                    ? Colors.indigo.shade900
+                    : Colors.grey.shade700,
+              ),
+            ),
+          ),
+          if (hasPosition)
+            IconButton(
+              icon: const Icon(Icons.close, size: 15),
+              tooltip: '清除位置',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => setState(() {
+                _textbook = null;
+                _chapter = null;
+                _section = null;
+              }),
+            ),
+          TextButton(
+            onPressed: _pickLocation,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(hasPosition ? '修改' : '定位',
+                style: const TextStyle(fontSize: 12.5)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 打开位置选择面板。取消（返回 null）时保持原选择不变。
+  Future<void> _pickLocation() async {
+    final course = (_course ?? '').trim();
+    if (course.isEmpty) {
+      _showSnack('先选一门课，再定位章节');
+      return;
+    }
+    final result = await showLocationPicker(
+      context,
+      course: course,
+      initial: _location,
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _textbook = result.textbook;
+      _chapter = result.chapter;
+      _section = result.section;
+    });
   }
 
   /// 课程选择行。
@@ -606,8 +775,16 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                   label: Text(o, style: const TextStyle(fontSize: 12)),
                   selected: selected == o,
                   visualDensity: VisualDensity.compact,
-                  onSelected: (v) =>
-                      setState(() => _course = v ? o : null),
+                  onSelected: (v) => setState(() {
+                    final next = v ? o : null;
+                    // 换课程 = 换教材，旧位置必须清掉，否则会拿 A 课的章节去查 B 课
+                    if (next != _course) {
+                      _textbook = null;
+                      _chapter = null;
+                      _section = null;
+                    }
+                    _course = next;
+                  }),
                 ),
               if (selected.isNotEmpty && !isPreset)
                 // 自定义课程名不在预设里，单独显示以便取消
@@ -661,7 +838,13 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     // 对话框关闭动画期间 TextField 仍会引用 controller，延后释放
     WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.dispose());
     if (result == null || !mounted) return;
-    setState(() => _course = result.isEmpty ? null : result);
+    final next = result.isEmpty ? null : result;
+    if (next != _course) {
+      _textbook = null;
+      _chapter = null;
+      _section = null;
+    }
+    setState(() => _course = next);
   }
 
   void _showSnack(String msg) {
@@ -751,6 +934,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 8),
                     _buildCoursePicker(),
+                    const SizedBox(height: 8),
+                    _buildLocationBar(),
                     const SizedBox(height: 12),
 
                     if (recording || _recognizing || p.failedSegments > 0)
