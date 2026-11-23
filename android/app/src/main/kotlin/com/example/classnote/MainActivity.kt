@@ -24,6 +24,8 @@ class MainActivity : FlutterActivity() {
                 "getPendingText" -> {
                     result.success(pendingText)
                     pendingText = null
+                    // 消费后把 intent 恢复成普通启动，避免旋转/重建时重复读到同一段分享
+                    setIntent(Intent(Intent.ACTION_MAIN))
                 }
                 else -> result.notImplemented()
             }
@@ -38,6 +40,8 @@ class MainActivity : FlutterActivity() {
         pendingText = text
         // 页面已在前台时直接推过去；没有监听者也没关系，getPendingText 会兜底
         channel?.invokeMethod("onSharedText", text)
+        // 同上：清掉分享意图，避免配置变更重建 Activity 时重复投递
+        setIntent(Intent(Intent.ACTION_MAIN))
     }
 
     private fun extractSharedText(intent: Intent?): String? {

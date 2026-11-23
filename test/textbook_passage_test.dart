@@ -3,6 +3,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'package:classnote/models/note.dart';
 import 'package:classnote/services/db_service.dart';
 import 'package:classnote/services/local_vector.dart';
 
@@ -71,5 +72,24 @@ void main() {
     await db.deleteNoteRewrite(id2);
     expect(await db.listNoteRewrites('n1'), isEmpty);
     expect((await db.listNoteRewrites('n2')).length, 1);
+  });
+
+  test('删除笔记会连带删掉它的改写版本，不留残留正文', () async {
+    final db = DbService();
+    final note = Note(
+      id: 'n-del',
+      title: '植物学 第四讲',
+      transcript: '芋头是球茎。',
+      course: '植物学',
+      createdAt: DateTime.now(),
+    );
+    await db.insert(note);
+    await db.addNoteRewrite('n-del', '改写内容', source: '外部分享');
+    await db.addNoteRewrite('n-other', '别的笔记的改写', source: '外部分享');
+
+    await db.delete('n-del');
+
+    expect(await db.listNoteRewrites('n-del'), isEmpty);
+    expect((await db.listNoteRewrites('n-other')).length, 1);
   });
 }

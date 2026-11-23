@@ -115,6 +115,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 从别的 App 分享进来、还没导入的改写文本
   String? _pendingSharedText;
   StreamSubscription<String>? _shareSub;
+  bool _importing = false;
 
   /// 批量替换前保存的待确认快照；撤销时要连清单一起还原
   List<PendingItem>? _undoPendingSnapshot;
@@ -172,6 +173,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 先挂监听再拉初始 Intent，避免冷启动那条在监听器之前被广播丢掉。
   void _bindShareIn() {
     _shareSub = ShareInService.instance.incoming.listen((text) {
+      // 流事件先到就消费掉，避免 init 阶段 takePending 再处理一次
+      ShareInService.instance.takePending();
       if (!mounted) return;
       if (_note == null) {
         _pendingSharedText = text;
@@ -179,7 +182,17 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         _handleSharedText(text);
       }
     });
-    ShareInService.instance.ensureInit();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await ShareInService.instance.ensureInit();
+      if (!mounted) return;
+      final pending = ShareInService.instance.takePending();
+      if (pending == null) return;
+      if (_note == null) {
+        _pendingSharedText = pending;
+      } else {
+        _handleSharedText(pending);
+      }
+    });
   }
 
   /// 读取笔记，并尝试解析已有的总结。
@@ -2061,9 +2074,12 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     SegmentedButton<bool>(
-                      segments: const [
-                        ButtonSegment(value: true, label: Text('详细笔记')),
-                        ButtonSegment(value: false, label: Text('原文转写')),
+                      segments: [
+                        if (detail.isNotEmpty)
+                          const ButtonSegment(
+                              value: true, label: Text('详细笔记')),
+                        const ButtonSegment(
+                            value: false, label: Text('原文转写')),
                       ],
                       selected: {useDetail},
                       onSelectionChanged: (v) => setLocal(() {
@@ -2082,9 +2098,15 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                       value: mask,
                       title: const Text('脱敏（手机号/学号/邮箱）',
                           style: TextStyle(fontSize: 13)),
+                      subtitle: mask
+                          ? null
+                          : const Text('关闭后发送原文；重新打开会对当前文本再脱敏一次',
+                              style: TextStyle(fontSize: 11)),
                       onChanged: (v) => setLocal(() {
+                        // 打开：对当前文本就地脱敏（保留用户已做的编辑）
+                        // 关闭：不做"反脱敏"——原文一旦被替换，无法可靠还原
+                        if (v) ctrl.text = Desensitizer.apply(ctrl.text);
                         mask = v;
-                        refresh();
                       }),
                     ),
                     const SizedBox(height: 4),
@@ -2125,8 +2147,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       ),
     );
     final payload = ctrl.text.trim();
-    // dialog 关闭动画期间 controller 可能还被引用，延后释放
-    WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.dispose());
+    // dialog 关闭动画期间 TextField 仍挂在树上引用 controller，
+    // 立刻 dispose 会抛 "used after disposed"，延迟到动画结束再释放。
+    Future<void>.delayed(const Duration(milliseconds: 400), ctrl.dispose);
     if (ok != true || !mounted) return;
     if (payload.isEmpty) {
       _showSnack('内容为空，没有发送');
@@ -2135,22 +2158,32 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     await Clipboard.setData(ClipboardData(text: payload));
     if (!mounted) return;
     try {
-      await SharePlus.instance.share(ShareParams(
+      final result = await SharePlus.instance.share(ShareParams(
         text: payload,
         subject: _note?.title ?? '课堂笔记',
       ));
+      if (!mounted) return;
+      if (result.status == ShareResultStatus.unavailable) {
+        _showSnack('没有可接收分享的应用；内容已在剪贴板，可手动切换到 DeepSeek 粘贴');
+        return;
+      }
+      _showSnack('已发起分享；内容也已复制到剪贴板');
     } catch (_) {
       // 分享面板打不开时，剪贴板里已经有内容，不算失败
       _showSnack('已复制到剪贴板；分享面板没打开，可手动切换到 DeepSeek 粘贴');
-      return;
     }
-    if (mounted) _showSnack('已发起分享；内容也已复制到剪贴板');
   }
 
   /// 从外部 App 分享回来：预览 + 保存为新版本（不覆盖原笔记）
   Future<void> _handleSharedText(String text) async {
     final content = text.trim();
     if (content.isEmpty) return;
+    // 用户连点两次分享时，别叠出两个导入对话框
+    if (_importing) {
+      _pendingSharedText = content;
+      return;
+    }
+    _importing = true;
     final base = _detailMarkdown.trim();
     final oldLines = base.split('\n').where((l) => l.trim().isNotEmpty).toSet();
     final newLines = content.split('\n').where((l) => l.trim().isNotEmpty).toSet();
@@ -2205,6 +2238,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         ],
       ),
     );
+    _importing = false;
     if (ok != true || !mounted) return;
     await _db.addNoteRewrite(widget.noteId, content, source: '外部分享');
     if (!mounted) return;
@@ -2222,35 +2256,50 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _showSnack('还没有外部改写版本');
       return;
     }
+    final items = List<Map<String, Object?>>.from(rows);
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (ctx) => ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        itemCount: rows.length,
-        itemBuilder: (ctx, i) {
-          final row = rows[i];
-          final content = (row['content'] as String?) ?? '';
-          final ts = DateTime.fromMillisecondsSinceEpoch(
-              (row['created_at'] as num?)?.toInt() ?? 0);
-          final stamp = '${ts.year}-${ts.month.toString().padLeft(2, '0')}-'
-              '${ts.day.toString().padLeft(2, '0')} '
-              '${ts.hour.toString().padLeft(2, '0')}:'
-              '${ts.minute.toString().padLeft(2, '0')}';
-          return ListTile(
-            dense: true,
-            title: Text('版本 ${rows.length - i} · $stamp',
-                style: const TextStyle(fontSize: 13)),
-            subtitle: Text('${content.length} 字',
-                style: const TextStyle(fontSize: 11.5)),
-            onTap: () => _showRewriteContent(row),
-          );
-        },
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => items.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: Text('没有版本了')),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                itemCount: items.length,
+                itemBuilder: (ctx, i) {
+                  final row = items[i];
+                  final content = (row['content'] as String?) ?? '';
+                  final ts = DateTime.fromMillisecondsSinceEpoch(
+                      (row['created_at'] as num?)?.toInt() ?? 0);
+                  final stamp =
+                      '${ts.year}-${ts.month.toString().padLeft(2, '0')}-'
+                      '${ts.day.toString().padLeft(2, '0')} '
+                      '${ts.hour.toString().padLeft(2, '0')}:'
+                      '${ts.minute.toString().padLeft(2, '0')}';
+                  return ListTile(
+                    dense: true,
+                    title: Text('版本 ${items.length - i} · $stamp',
+                        style: const TextStyle(fontSize: 13)),
+                    subtitle: Text('${content.length} 字',
+                        style: const TextStyle(fontSize: 11.5)),
+                    onTap: () => _showRewriteContent(
+                      row,
+                      onDeleted: () => setSheet(() => items.removeAt(i)),
+                    ),
+                  );
+                },
+              ),
       ),
     );
   }
 
-  Future<void> _showRewriteContent(Map<String, Object?> row) async {
+  Future<void> _showRewriteContent(
+    Map<String, Object?> row, {
+    VoidCallback? onDeleted,
+  }) async {
     final content = (row['content'] as String?) ?? '';
     final id = (row['id'] as String?) ?? '';
     await showDialog<void>(
@@ -2279,6 +2328,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           TextButton(
             onPressed: () async {
               await _db.deleteNoteRewrite(id);
+              onDeleted?.call();
               if (ctx.mounted) Navigator.pop(ctx);
               _showSnack('已删除该版本');
             },

@@ -8,6 +8,7 @@
 // 每个迁移必须可重复执行（IF NOT EXISTS 或先查 PRAGMA table_info），失败要能回滚到旧版本。
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:sqflite/sqflite.dart';
+import 'package:uuid/uuid.dart';
 import 'package:path/path.dart';
 
 import '../config.dart';
@@ -363,7 +364,8 @@ class DbService {
     String source = '',
   }) async {
     final db = await database;
-    final id = 'r${DateTime.now().microsecondsSinceEpoch}';
+    // 同一微秒内连续插入（如连点导入）会撞主键，用 uuid 避免
+    final id = 'r${const Uuid().v4()}';
     await db.insert('note_rewrites', {
       'id': id,
       'note_id': noteId,
@@ -590,10 +592,16 @@ class DbService {
     await _syncIndex(note, db);
   }
 
-  /// 删除一条笔记
+  /// 删除一条笔记（连同它的外部改写版本、质检结果一起删，避免残留正文）
   Future<void> delete(String id) async {
     final db = await database;
     await db.delete('notes', where: 'id = ?', whereArgs: [id]);
+    try {
+      await db.delete('note_rewrites', where: 'note_id = ?', whereArgs: [id]);
+      await db.delete('academic_reviews', where: 'note_id = ?', whereArgs: [id]);
+    } catch (_) {
+      // 老库没有这些表时忽略；不能因为清理失败就删不掉笔记
+    }
     try {
       await _index.removeDoc(id, db: db);
     } catch (_) {}
