@@ -20,6 +20,8 @@ import '../models/wiki_entry.dart';
 import '../models/summary_level.dart';
 import '../services/academic_review_service.dart';
 import '../services/db_service.dart';
+import '../services/desensitizer.dart';
+import '../services/share_in_service.dart';
 import '../services/local_vector.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
@@ -110,6 +112,10 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   bool _reviewing = false;
   String _reviewProgress = '';
 
+  /// 从别的 App 分享进来、还没导入的改写文本
+  String? _pendingSharedText;
+  StreamSubscription<String>? _shareSub;
+
   /// 批量替换前保存的待确认快照；撤销时要连清单一起还原
   List<PendingItem>? _undoPendingSnapshot;
 
@@ -158,7 +164,22 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         setState(() => _tabIndex = _tabController.index);
       }
     });
+    _bindShareIn();
     _load();
+  }
+
+  /// 接收外部分享（DeepSeek 等改写后的稿子）：
+  /// 先挂监听再拉初始 Intent，避免冷启动那条在监听器之前被广播丢掉。
+  void _bindShareIn() {
+    _shareSub = ShareInService.instance.incoming.listen((text) {
+      if (!mounted) return;
+      if (_note == null) {
+        _pendingSharedText = text;
+      } else {
+        _handleSharedText(text);
+      }
+    });
+    ShareInService.instance.ensureInit();
   }
 
   /// 读取笔记，并尝试解析已有的总结。
@@ -202,6 +223,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           TemplateService.recommendFor(note.effectiveCourse);
     });
     await _loadLocation(note);
+    final pending = _pendingSharedText;
+    if (pending != null) {
+      _pendingSharedText = null;
+      if (mounted) _handleSharedText(pending);
+    }
     _initTranslation(note);
   }
 
@@ -661,6 +687,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
   @override
   void dispose() {
+    _shareSub?.cancel();
     _translateDebounce?.cancel();
     _tabController.dispose();
     _transcriptController.dispose();
@@ -712,6 +739,33 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.school_outlined),
+          ),
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              if (v == 'send') {
+                _sendToDeepSeek();
+              } else if (v == 'versions') {
+                _showRewrites();
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'send',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.send_outlined),
+                  title: Text('发到 DeepSeek App'),
+                ),
+              ),
+              PopupMenuItem(
+                value: 'versions',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.history),
+                  title: Text('外部改写版本'),
+                ),
+              ),
+            ],
           ),
         ],
         bottom: TabBar(
@@ -1971,6 +2025,268 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     _transcriptController.text = result.text;
     await _saveTranscript();
     _showSnack('已替换 ${result.replaced} 处：${c.wrong} → ${c.correct}');
+  }
+
+  /// 把笔记发到外部 App（DeepSeek 等）：剪贴板 + 系统分享双路。
+  /// 每次都要用户确认（PIPL：属于向第三方提供内容），默认开脱敏。
+  Future<void> _sendToDeepSeek() async {
+    final detail = _detailMarkdown.trim();
+    final transcript = _transcriptController.text.trim();
+    if (detail.isEmpty && transcript.isEmpty) {
+      _showSnack('还没有可发送的内容');
+      return;
+    }
+    var useDetail = detail.isNotEmpty;
+    var mask = true;
+    final ctrl = TextEditingController(
+      text: Desensitizer.apply(useDetail ? detail : transcript),
+    );
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          void refresh() {
+            final raw = useDetail ? detail : transcript;
+            ctrl.text = mask ? Desensitizer.apply(raw) : raw;
+          }
+
+          return AlertDialog(
+            title: const Text('发到 DeepSeek App'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SegmentedButton<bool>(
+                      segments: const [
+                        ButtonSegment(value: true, label: Text('详细笔记')),
+                        ButtonSegment(value: false, label: Text('原文转写')),
+                      ],
+                      selected: {useDetail},
+                      onSelectionChanged: (v) => setLocal(() {
+                        useDetail = v.first;
+                        refresh();
+                      }),
+                      style: ButtonStyle(
+                        textStyle: WidgetStateProperty.all(
+                            const TextStyle(fontSize: 12.5)),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      value: mask,
+                      title: const Text('脱敏（手机号/学号/邮箱）',
+                          style: TextStyle(fontSize: 13)),
+                      onChanged: (v) => setLocal(() {
+                        mask = v;
+                        refresh();
+                      }),
+                    ),
+                    const SizedBox(height: 4),
+                    TextField(
+                      controller: ctrl,
+                      minLines: 4,
+                      maxLines: 8,
+                      style: const TextStyle(fontSize: 12),
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: '将发送的内容（可改）',
+                      ),
+                      onChanged: (_) => setLocal(() {}),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${ctrl.text.length} 字 · 内容会进入对方对话历史，'
+                      '请先在 DeepSeek 里打开「联网搜索」',
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('复制并分享'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    final payload = ctrl.text.trim();
+    // dialog 关闭动画期间 controller 可能还被引用，延后释放
+    WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.dispose());
+    if (ok != true || !mounted) return;
+    if (payload.isEmpty) {
+      _showSnack('内容为空，没有发送');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: payload));
+    if (!mounted) return;
+    try {
+      await SharePlus.instance.share(ShareParams(
+        text: payload,
+        subject: _note?.title ?? '课堂笔记',
+      ));
+    } catch (_) {
+      // 分享面板打不开时，剪贴板里已经有内容，不算失败
+      _showSnack('已复制到剪贴板；分享面板没打开，可手动切换到 DeepSeek 粘贴');
+      return;
+    }
+    if (mounted) _showSnack('已发起分享；内容也已复制到剪贴板');
+  }
+
+  /// 从外部 App 分享回来：预览 + 保存为新版本（不覆盖原笔记）
+  Future<void> _handleSharedText(String text) async {
+    final content = text.trim();
+    if (content.isEmpty) return;
+    final base = _detailMarkdown.trim();
+    final oldLines = base.split('\n').where((l) => l.trim().isNotEmpty).toSet();
+    final newLines = content.split('\n').where((l) => l.trim().isNotEmpty).toSet();
+    final added = newLines.difference(oldLines).length;
+    final removed = oldLines.difference(newLines).length;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入外部改写'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('收到 ${content.length} 字。与当前详细笔记相比：'
+                    '新增 $added 行、原稿有 $removed 行未出现。',
+                    style: const TextStyle(fontSize: 12.5)),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    content.length > 800
+                        ? '${content.substring(0, 800)}…'
+                        : content,
+                    style: const TextStyle(fontSize: 11.5),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text('保存后会作为新版本并存，原笔记不会被覆盖。',
+                    style: TextStyle(
+                        fontSize: 11, color: Colors.grey.shade600)),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('保存为新版本'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await _db.addNoteRewrite(widget.noteId, content, source: '外部分享');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('已保存为新版本'),
+      action: SnackBarAction(label: '查看', onPressed: _showRewrites),
+    ));
+  }
+
+  /// 查看/复制历史改写版本
+  Future<void> _showRewrites() async {
+    final rows = await _db.listNoteRewrites(widget.noteId);
+    if (!mounted) return;
+    if (rows.isEmpty) {
+      _showSnack('还没有外部改写版本');
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        itemCount: rows.length,
+        itemBuilder: (ctx, i) {
+          final row = rows[i];
+          final content = (row['content'] as String?) ?? '';
+          final ts = DateTime.fromMillisecondsSinceEpoch(
+              (row['created_at'] as num?)?.toInt() ?? 0);
+          final stamp = '${ts.year}-${ts.month.toString().padLeft(2, '0')}-'
+              '${ts.day.toString().padLeft(2, '0')} '
+              '${ts.hour.toString().padLeft(2, '0')}:'
+              '${ts.minute.toString().padLeft(2, '0')}';
+          return ListTile(
+            dense: true,
+            title: Text('版本 ${rows.length - i} · $stamp',
+                style: const TextStyle(fontSize: 13)),
+            subtitle: Text('${content.length} 字',
+                style: const TextStyle(fontSize: 11.5)),
+            onTap: () => _showRewriteContent(row),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _showRewriteContent(Map<String, Object?> row) async {
+    final content = (row['content'] as String?) ?? '';
+    final id = (row['id'] as String?) ?? '';
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('改写版本'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Text(content, style: const TextStyle(fontSize: 12)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: content));
+              if (ctx.mounted) Navigator.pop(ctx);
+              _showSnack('已复制');
+            },
+            child: const Text('复制'),
+          ),
+          TextButton(
+            onPressed: () async {
+              await _db.deleteNoteRewrite(id);
+              if (ctx.mounted) Navigator.pop(ctx);
+              _showSnack('已删除该版本');
+            },
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildReportPanel(CalibrationReport report) {

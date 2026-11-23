@@ -54,4 +54,22 @@ void main() {
     expect(hits.first.doc.source, '教材摘录');
     expect(hits.first.doc.text, contains('芋头'));
   });
+
+  test('外部改写版本能并存、按时间列出、可删', () async {
+    final db = DbService();
+    final id1 = await db.addNoteRewrite('n1', '第一版改写', source: '外部分享');
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    final id2 = await db.addNoteRewrite('n1', '第二版改写', source: '外部分享');
+    await db.addNoteRewrite('n2', '别的笔记', source: '外部分享');
+
+    final rows = await db.listNoteRewrites('n1');
+    expect(rows.length, 2);
+    expect(rows.first['content'], '第二版改写'); // 倒序
+    expect(rows.last['content'], '第一版改写');
+
+    await db.deleteNoteRewrite(id1);
+    await db.deleteNoteRewrite(id2);
+    expect(await db.listNoteRewrites('n1'), isEmpty);
+    expect((await db.listNoteRewrites('n2')).length, 1);
+  });
 }

@@ -46,6 +46,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 接收其他 App 分享来的文本（用于把 DeepSeek 等外部改写的笔记带回来）。
+                 只收 text/*，不声明 BROWSABLE，避免被浏览器当作打开目标。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
 
         <!-- 录音前台服务。必须手动注册，否则 startService 时直接崩。

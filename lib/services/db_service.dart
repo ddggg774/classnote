@@ -38,7 +38,8 @@ class DbService {
   /// v10 = notes 增加 language（zh/en，默认 zh）与 translation_json（英语课译文）。
   /// v11 = 新增 academic_reviews 表（学科专家质检结果，一篇笔记一份）。
   /// v12 = 新增 textbook_passages 表（教材摘录：实体书拍照/手抄的原文，供质检当依据）。
-  static const int dbVersion = 12;
+  /// v13 = 新增 note_rewrites 表（外部改写版本，保留历史，不覆盖原笔记）。
+  static const int dbVersion = 13;
 
   Database? _db;
 
@@ -166,6 +167,9 @@ class DbService {
         }
         if (oldVersion < 12) {
           await _createTextbookPassages(db);
+        }
+        if (oldVersion < 13) {
+          await _createNoteRewrites(db);
         }
       },
       ),
@@ -318,6 +322,7 @@ class DbService {
 
     await _createAcademicReviews(db);
     await _createTextbookPassages(db);
+    await _createNoteRewrites(db);
 
     await _seedTextbooksIfEmpty(db);
   }
@@ -333,6 +338,55 @@ class DbService {
         created_at INTEGER NOT NULL
       )
     ''');
+  }
+
+  /// 外部改写版本：从 DeepSeek 等 App 分享回来的稿子存这里，**不覆盖 summary_json**。
+  Future<void> _createNoteRewrites(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS note_rewrites (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_rewrite_note ON note_rewrites(note_id)',
+    );
+  }
+
+  /// 存一版外部改写（并存，不覆盖原笔记）
+  Future<String> addNoteRewrite(
+    String noteId,
+    String content, {
+    String source = '',
+  }) async {
+    final db = await database;
+    final id = 'r${DateTime.now().microsecondsSinceEpoch}';
+    await db.insert('note_rewrites', {
+      'id': id,
+      'note_id': noteId,
+      'content': content,
+      'source': source,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    });
+    return id;
+  }
+
+  Future<List<Map<String, Object?>>> listNoteRewrites(String noteId) async {
+    final db = await database;
+    return db.query(
+      'note_rewrites',
+      where: 'note_id = ?',
+      whereArgs: [noteId],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  Future<void> deleteNoteRewrite(String id) async {
+    final db = await database;
+    await db.delete('note_rewrites', where: 'id = ?', whereArgs: [id]);
   }
 
   /// 教材摘录：实体书没有电子版时，用户手抄/拍照识别后存下的原文段落。

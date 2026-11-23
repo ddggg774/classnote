@@ -69,13 +69,14 @@ void main() {
     test('开源许可与担保排除', () {
       expect(Disclaimer.text, contains('MIT'));
       expect(Disclaimer.text, contains('担保'));
+      expect(Disclaimer.text, contains('外部应用'));
       expect(Disclaimer.text, contains('责任'));
     });
 
     test('版本号非空，且与文档同版本', () {
       expect(Disclaimer.version, isNotEmpty);
       // 改了正文就必须改版本号，否则老用户看不到新条款
-      expect(Disclaimer.version, '1.0');
+      expect(Disclaimer.version, '1.1');
     });
   });
 }
