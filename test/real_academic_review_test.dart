@@ -102,7 +102,18 @@ void main() {
 
   test('真实链路：逐句全审（每句单独判）', () async {
     final svc = AcademicReviewService(apiKeyOverride: key);
-    final review = await svc.reviewAllSentences(sampleBirdNote, course: '植物学');
+    const evidence = [
+      ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶，属茎的变态', source: '知识库'),
+      ReviewEvidence('茎刺：由茎（枝）变态形成，如山楂的刺', source: '知识库'),
+      ReviewEvidence('叶刺：由叶变态形成，如小檗的刺', source: '知识库'),
+      ReviewEvidence('佛焰苞：天南星科花序外包被的变态叶，如红掌', source: '知识库'),
+      ReviewEvidence('捕虫叶：触发靠感觉毛，消化靠消化腺分泌酶', source: '知识库'),
+    ];
+    final review = await svc.reviewAllSentences(
+      sampleBirdNote,
+      course: '植物学',
+      evidence: evidence,
+    );
     // ignore: avoid_print
     print('ALL ${jsonEncode({
       'summary': review.summary,

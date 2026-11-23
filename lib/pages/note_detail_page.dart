@@ -16,6 +16,7 @@ import '../models/mind_graph.dart';
 import '../models/note.dart';
 import '../models/note_template.dart';
 import '../models/study_note.dart';
+import '../models/wiki_entry.dart';
 import '../models/summary_level.dart';
 import '../services/academic_review_service.dart';
 import '../services/db_service.dart';
@@ -1600,15 +1601,61 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _showSnack('还没有可质检的正文');
       return;
     }
-    setState(() => _reviewing = true);
+
+    final count = AcademicReviewService.splitSentences(source).length;
+    final mode = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('学科质检'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'sentence'),
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.format_list_numbered),
+              title: const Text('逐句全审'),
+              subtitle: Text('每句单独判，漏报最少 · 约 $count 句'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'fast'),
+            child: const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.bolt),
+              title: Text('快速质检'),
+              subtitle: Text('整段找候选 + 复核，省时间'),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (mode == null || !mounted) return;
+
+    setState(() {
+      _reviewing = true;
+      _reviewProgress = '';
+    });
     try {
-      final route = await _academicReviewer.route(source);
-      // 整段质检 + 逐条单句复核：二审只留被证据确认的硬伤
-      final review = await _academicReviewer.reviewWithVerification(
-        source,
-        subject: route.subject,
-        course: _note?.course ?? '',
-      );
+      final AcademicReview review;
+      if (mode == 'sentence') {
+        final evidence = await _buildReviewEvidence(_note);
+        if (!mounted) return;
+        review = await _academicReviewer.reviewAllSentences(
+          source,
+          course: _note?.course ?? '',
+          evidence: evidence,
+          onProgress: (done, total) {
+            if (!mounted) return;
+            setState(() => _reviewProgress = '已审 $done/$total 句');
+          },
+        );
+      } else {
+        // 整段质检 + 逐条单句复核：二审只留被证据确认的硬伤
+        review = await _academicReviewer.reviewWithVerification(
+          source,
+          course: _note?.course ?? '',
+        );
+      }
       await _db.saveAcademicReview(
         widget.noteId,
         review.encode(),
@@ -1627,6 +1674,38 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         });
       }
     }
+  }
+
+  /// 质检可引用的证据：本节术语表 + 本课程已确认的知识库词条。
+  /// 只收已确认条目——把待确认词条当依据，等于用没验证的东西验证别人。
+  Future<List<ReviewEvidence>> _buildReviewEvidence(Note? note) async {
+    final out = <ReviewEvidence>[];
+    final pack = _terms;
+    if (pack != null) {
+      for (final t in pack.terms) {
+        final b = StringBuffer(t.term);
+        if (t.definition.isNotEmpty) b.write('：${t.definition}');
+        if (t.misheard.isNotEmpty) b.write('（常见误听：${t.misheard}）');
+        out.add(ReviewEvidence(b.toString(), source: '术语表'));
+      }
+    }
+    final course = note?.effectiveCourse.trim() ?? '';
+    if (course.isNotEmpty) {
+      try {
+        final entries = await WikiService()
+            .listByCourse(course, status: WikiEntryStatus.confirmed);
+        for (final e in entries) {
+          if (e.definition.trim().isEmpty) continue;
+          out.add(ReviewEvidence(
+            '${e.term}：${e.definition}',
+            source: '知识库',
+          ));
+        }
+      } catch (_) {
+        // 知识库读失败不影响质检，少一层依据而已
+      }
+    }
+    return out;
   }
 
   void _showAcademicReviewSheet(AcademicReview review) {

@@ -17,6 +17,13 @@ import '../config.dart';
 import '../models/academic_review.dart';
 import 'settings_service.dart';
 
+/// 一条可引用的证据（来自术语表 / 知识库 / 以后的教材片段）
+class ReviewEvidence {
+  final String text;
+  final String source;
+  const ReviewEvidence(this.text, {this.source = '知识库'});
+}
+
 class AcademicReviewService {
   /// 测试注入：给定 (system, user) 返回模型原始输出
   final Future<String> Function(String system, String user)? ai;
@@ -230,6 +237,44 @@ class AcademicReviewService {
     }
   }
 
+  static Set<String> _bigrams(String s) {
+    final clean = s.replaceAll(RegExp(r'\s+'), '');
+    final out = <String>{};
+    for (var i = 0; i + 1 < clean.length; i++) {
+      out.add(clean.substring(i, i + 2));
+    }
+    return out;
+  }
+
+  /// 为一句挑证据：按二字组重叠排序，取前 3 条。
+  static List<ReviewEvidence> pickEvidence(
+    String sentence,
+    List<ReviewEvidence> pool, {
+    int max = 3,
+  }) {
+    if (pool.isEmpty) return const [];
+    final target = _bigrams(sentence);
+    final scored = <({ReviewEvidence e, int score})>[];
+    for (final e in pool) {
+      final overlap = _bigrams(e.text).intersection(target).length;
+      // 一个二字组就够：证据池很小，宁多带一条也别一句都带不上
+      if (overlap >= 1) scored.add((e: e, score: overlap));
+    }
+    scored.sort((a, b) => b.score.compareTo(a.score));
+    return scored.take(max).map((x) => x.e).toList();
+  }
+
+  /// 复核给出的依据是否真的引用了我们提供的材料。
+  /// 没引用就不许算「有据硬伤」，降为 warning。
+  static bool groundedIn(String evidence, List<ReviewEvidence> provided) {
+    if (provided.isEmpty) return false;
+    final e = _bigrams(evidence);
+    for (final p in provided) {
+      if (_bigrams(p.text).intersection(e).length >= 3) return true;
+    }
+    return false;
+  }
+
   /// 把笔记切成句子：按中文句末标点与换行切，跳过标题行与过短片段。
   /// 标题（「一、地下变态茎」「二、地上变态茎」）不是知识点，送进去只会浪费调用。
   static List<String> splitSentences(String text) {
@@ -262,6 +307,7 @@ class AcademicReviewService {
     SubjectCode? subject,
     String course = '',
     int maxSentences = 60,
+    List<ReviewEvidence> evidence = const [],
     void Function(int done, int total)? onProgress,
   }) async {
     final text = noteText.trim();
@@ -274,6 +320,8 @@ class AcademicReviewService {
     final skipped = all.length - limited.length;
 
     final verdicts = List<SentenceVerdict?>.filled(limited.length, null);
+    final pickedPer =
+        List<List<ReviewEvidence>>.generate(limited.length, (_) => const []);
     var cursor = 0;
     var done = 0;
     var failed = 0;
@@ -282,8 +330,14 @@ class AcademicReviewService {
       while (true) {
         final i = cursor++;
         if (i >= limited.length) return;
+        final picked = pickEvidence(limited[i], evidence);
+        pickedPer[i] = picked;
+        final rag = picked
+            .map((p) => '【${p.source}】${p.text}')
+            .join('\n');
         try {
-          verdicts[i] = await verifySentence(limited[i], subject: chosen);
+          verdicts[i] =
+              await verifySentence(limited[i], subject: chosen, ragEvidence: rag);
         } catch (_) {
           failed++;
         }
@@ -298,14 +352,28 @@ class AcademicReviewService {
     final flaws = <AcademicLogicFlaw>[];
     var hi = 1;
     var fi = 1;
-    for (final v in verdicts) {
+    var downgraded = 0;
+    for (var i = 0; i < verdicts.length; i++) {
+      final v = verdicts[i];
       if (v == null || !v.hasError) continue;
-      final evidence = v.evidence.trim();
+      var evidence = v.evidence.trim();
       final correction = v.correction.trim();
       final category = (v.errorCategory ?? '').trim().isEmpty
           ? '知识性问题'
           : v.errorCategory!.trim();
-      if (v.errorLevel == 'fatal_error') {
+
+      final picked = pickedPer[i];
+      var level = v.errorLevel ?? 'fatal_error';
+      // 接地校验：说「有错」却一个字都没引用我们给的材料 → 降为存疑
+      if (level == 'fatal_error' &&
+          picked.isNotEmpty &&
+          !groundedIn(evidence, picked)) {
+        level = 'warning';
+        downgraded++;
+        evidence =
+            '$evidence（未引用提供的知识库依据，按存疑处理）';
+      }
+      if (level == 'fatal_error') {
         hard.add(AcademicHardError(
           id: hi++,
           errorType: category,
@@ -330,6 +398,12 @@ class AcademicReviewService {
       ..write('逐句审阅 $covered 句：${hard.length} 处硬伤、${flaws.length} 处表述不严谨');
     if (failed > 0) summary.write('；$failed 句复核失败未计入');
     if (skipped > 0) summary.write('；超出上限，另有 $skipped 句未审');
+    if (downgraded > 0) summary.write('；$downgraded 处因未引用知识库依据降为存疑');
+    if (evidence.isEmpty) {
+      summary.write('；本次无知识库依据，结论仅凭模型知识');
+    } else if (downgraded == 0) {
+      summary.write('；已提供 ${evidence.length} 条知识库依据');
+    }
 
     final spec = subjects[chosen]!;
     return AcademicReview(

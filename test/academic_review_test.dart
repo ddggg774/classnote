@@ -223,4 +223,52 @@ void main() {
       expect(r.logicFlaws.single.originalText, contains('鳞茎'));
     });
   });
+
+  group('知识库依据', () {
+    test('按二字组重迭挑证据', () {
+      const pool = [
+        ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶', source: '知识库'),
+        ReviewEvidence('光合作用：把光能转成化学能', source: '知识库'),
+      ];
+      final picked =
+          AcademicReviewService.pickEvidence('芋头是典型的块茎。', pool);
+      expect(picked.length, 1);
+      expect(picked.single.text, contains('芋头'));
+    });
+
+    test('没引用给定依据的硬伤降为存疑', () async {
+      final svc = AcademicReviewService(ai: (system, user) async {
+        if (system.contains('路由器')) {
+          return '{"subject_code":"botany","confidence":0.9,"reason":"植物"}';
+        }
+        return '{"original_sentence":"芋头是块茎。","has_error":true,"error_level":"fatal_error","error_category":"分类归属错误","evidence":"凭我自己的记忆判断","correction":"芋头是球茎。","review_advice":""}';
+      });
+      final r = await svc.reviewAllSentences(
+        '芋头是典型的块茎。',
+        evidence: const [
+          ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶'),
+        ],
+      );
+      expect(r.hardErrors, isEmpty);
+      expect(r.logicFlaws.length, 1);
+      expect(r.summary, contains('降为存疑'));
+    });
+
+    test('引用到给定依据时保留硬伤', () async {
+      final svc = AcademicReviewService(ai: (system, user) async {
+        if (system.contains('路由器')) {
+          return '{"subject_code":"botany","confidence":0.9,"reason":"植物"}';
+        }
+        return '{"original_sentence":"芋头是块茎。","has_error":true,"error_level":"fatal_error","error_category":"分类归属错误","evidence":"知识库：芋头是地下变态茎中的球茎，具环状节和退化叶","correction":"芋头是球茎。","review_advice":""}';
+      });
+      final r = await svc.reviewAllSentences(
+        '芋头是典型的块茎。',
+        evidence: const [
+          ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶'),
+        ],
+      );
+      expect(r.hardErrors.length, 1);
+      expect(r.summary, isNot(contains('降为存疑')));
+    });
+  });
 }
