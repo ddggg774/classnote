@@ -10,12 +10,14 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../models/academic_review.dart';
 import '../models/course_location.dart';
 import '../models/mind_graph.dart';
 import '../models/note.dart';
 import '../models/note_template.dart';
 import '../models/study_note.dart';
 import '../models/summary_level.dart';
+import '../services/academic_review_service.dart';
 import '../services/db_service.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
@@ -100,6 +102,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 报告区是否展开「被预算压掉的条目」
   bool _showSuppressed = false;
 
+  /// 学科专家质检：结果与进行中状态
+  final AcademicReviewService _academicReviewer = AcademicReviewService();
+  AcademicReview? _academicReview;
+  bool _reviewing = false;
+
   /// 批量替换前保存的待确认快照；撤销时要连清单一起还原
   List<PendingItem>? _undoPendingSnapshot;
 
@@ -171,6 +178,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     // StudySummary.tryDecode 兼容三种历史形态：
     // ① 新格式（带 detail）；② 旧格式（只有 mindMap）；③ 坏数据（返回 null）
     final parsed = StudySummary.tryDecode(note.summaryJson);
+    final savedReview =
+        AcademicReview.tryDecode(await _db.academicReviewJson(widget.noteId));
     setState(() {
       _note = note;
       _mindMap = parsed?.mindMap;
@@ -180,6 +189,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _detailMarkdown = parsed?.detailMarkdown ?? '';
       _savedPending = parsed?.pending ?? const [];
       _savedSuppressed = parsed?.suppressedCount ?? 0;
+      _academicReview = savedReview;
       _extras = parsed?.extras ?? const {};
       // 模板：存过就按存的来，没存过按课程推荐
       final savedTpl = note.templateId;
@@ -688,6 +698,19 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     return Scaffold(
       appBar: AppBar(
         title: Text(note?.title ?? '笔记详情'),
+        actions: [
+          IconButton(
+            onPressed: _reviewing ? null : _runAcademicReview,
+            tooltip: '学科质检',
+            icon: _reviewing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.school_outlined),
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           isScrollable: true,
@@ -754,8 +777,37 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// Tab 1：原文（可编辑 + 保存 + 课前术语准备 + 质量校准）
   Widget _buildTranscriptTab() {
     final report = _report;
+    final review = _academicReview;
     return Column(
       children: [
+        if (review != null)
+          InkWell(
+            onTap: () => _showAcademicReviewSheet(review),
+            child: Container(
+              width: double.infinity,
+              color: Colors.indigo.shade50,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.school_outlined,
+                      size: 15, color: Colors.indigo.shade600),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '上次学科质检（${review.subject.label}）：'
+                      '${review.issueCount} 处问题',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.indigo.shade900),
+                    ),
+                  ),
+                  Text('查看',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.indigo.shade600)),
+                ],
+              ),
+            ),
+          ),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.all(12),
@@ -1519,6 +1571,257 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     } finally {
       if (mounted) setState(() => _pendingBusy = false);
     }
+  }
+
+  /// 学科质检：先路由，再交给对应学科专家。
+  /// 结果落库（一篇笔记一份），重开页面还能看到上次结论。
+  Future<void> _runAcademicReview() async {
+    final transcript = _transcriptController.text.trim();
+    final source = transcript.length >= 20 ? transcript : _detailMarkdown.trim();
+    if (source.isEmpty) {
+      _showSnack('还没有可质检的正文');
+      return;
+    }
+    setState(() => _reviewing = true);
+    try {
+      final route = await _academicReviewer.route(source);
+      final review = await _academicReviewer.review(
+        source,
+        subject: route.subject,
+        course: _note?.course ?? '',
+      );
+      await _db.saveAcademicReview(
+        widget.noteId,
+        review.encode(),
+        subject: review.subject.code,
+      );
+      if (!mounted) return;
+      setState(() => _academicReview = review);
+      _showAcademicReviewSheet(review);
+    } catch (e) {
+      _showSnack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _reviewing = false);
+    }
+  }
+
+  void _showAcademicReviewSheet(AcademicReview review) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.75,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (ctx, scrollController) => ListView(
+          controller: scrollController,
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    review.agentName,
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.indigo.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    review.subject.label,
+                    style: TextStyle(
+                        fontSize: 11, color: Colors.indigo.shade700),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(review.summary,
+                style: TextStyle(fontSize: 13, color: Colors.grey.shade800)),
+            if (review.hardErrors.isNotEmpty) ...[
+              _reviewSectionTitle('硬伤 · 违背科学事实',
+                  Colors.red.shade700),
+              ...review.hardErrors.map((e) => _reviewCard(
+                    title: e.originalText,
+                    body: [
+                      if (e.errorType.isNotEmpty) '类型：${e.errorType}',
+                      if (e.reason.isNotEmpty) '为什么错：${e.reason}',
+                      if (e.suggestion.isNotEmpty) '建议改成：${e.suggestion}',
+                    ],
+                    color: Colors.red.shade50,
+                    border: Colors.red.shade200,
+                  )),
+            ],
+            if (review.logicFlaws.isNotEmpty) ...[
+              _reviewSectionTitle('表述不严谨 · 可能丢分',
+                  Colors.orange.shade800),
+              ...review.logicFlaws.map((e) => _reviewCard(
+                    title: e.originalText,
+                    body: [
+                      if (e.reason.isNotEmpty) e.reason,
+                      if (e.suggestion.isNotEmpty) '建议：${e.suggestion}',
+                    ],
+                    color: Colors.orange.shade50,
+                    border: Colors.orange.shade200,
+                  )),
+            ],
+            if (review.termCorrections.isNotEmpty) ...[
+              _reviewSectionTitle('术语正名', Colors.indigo.shade700),
+              ...review.termCorrections.map((e) => Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.indigo.shade100),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '${e.wrong} → ${e.correct}',
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => _applyTermCorrection(e),
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8),
+                                minimumSize: Size.zero,
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              child: const Text('替换',
+                                  style: TextStyle(fontSize: 12)),
+                            ),
+                          ],
+                        ),
+                        if (e.reason.isNotEmpty)
+                          Text(
+                            e.reason,
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: Colors.grey.shade700),
+                          ),
+                      ],
+                    ),
+                  )),
+            ],
+            if (review.reviewAdvice.trim().isNotEmpty) ...[
+              _reviewSectionTitle('复习建议', Colors.green.shade800),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(review.reviewAdvice,
+                    style: const TextStyle(fontSize: 12.5, height: 1.5)),
+              ),
+            ],
+            const SizedBox(height: 18),
+            Text(
+              '质检基于笔记文本与学科常识，不替代教材和老师讲解。',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _reviewSectionTitle(String text, Color color) => Padding(
+        padding: const EdgeInsets.only(top: 14, bottom: 6),
+        child: Text(text,
+            style: TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w700, color: color)),
+      );
+
+  Widget _reviewCard({
+    required String title,
+    required List<String> body,
+    required Color color,
+    required Color border,
+  }) =>
+      Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600)),
+            for (final line in body)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(line,
+                    style:
+                        TextStyle(fontSize: 11.5, color: Colors.grey.shade800)),
+              ),
+          ],
+        ),
+      );
+
+  /// 把学科质检里的「术语正名」应用到正文。全部替换，可撤销。
+  Future<void> _applyTermCorrection(AcademicTermCorrection c) async {
+    final text = _transcriptController.text;
+    if (!text.contains(c.wrong)) {
+      _showSnack('正文里找不到「${c.wrong}」，可能已被改动');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('替换术语'),
+        content: Text('把正文里的「${c.wrong}」全部替换成「${c.correct}」？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('替换'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    final result = PendingFixer.apply(
+      text,
+      PendingItem(snippet: c.wrong, candidates: [c.correct]),
+      c.correct,
+      all: true,
+    );
+    if (!result.changed) {
+      _showSnack('没有替换成功');
+      return;
+    }
+    setState(() => _undoTranscript = text);
+    _transcriptController.text = result.text;
+    await _saveTranscript();
+    _showSnack('已替换 ${result.replaced} 处：${c.wrong} → ${c.correct}');
   }
 
   Widget _buildReportPanel(CalibrationReport report) {

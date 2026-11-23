@@ -36,7 +36,8 @@ class DbService {
   /// v9 = notes 增加五个位置字段（textbook_id / chapter_no / chapter_title /
   ///      section_no / section_title），记录这节课的教材位置。老笔记留空。
   /// v10 = notes 增加 language（zh/en，默认 zh）与 translation_json（英语课译文）。
-  static const int dbVersion = 10;
+  /// v11 = 新增 academic_reviews 表（学科专家质检结果，一篇笔记一份）。
+  static const int dbVersion = 11;
 
   Database? _db;
 
@@ -158,6 +159,9 @@ class DbService {
             "TEXT NOT NULL DEFAULT 'zh'",
           );
           await _addColumnIfMissing(db, 'notes', 'translation_json', 'TEXT');
+        }
+        if (oldVersion < 11) {
+          await _createAcademicReviews(db);
         }
       },
       ),
@@ -308,7 +312,52 @@ class DbService {
       'ON sections(chapter_id, sort_order)',
     );
 
+    await _createAcademicReviews(db);
+
     await _seedTextbooksIfEmpty(db);
+  }
+
+  /// 学科质检结果：一篇笔记一份，重跑时覆盖。
+  /// 不拆成逐条表：质检结果整体展示，按条查没有使用场景，反而多一次 join。
+  Future<void> _createAcademicReviews(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS academic_reviews (
+        note_id TEXT PRIMARY KEY,
+        subject TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  /// 保存（覆盖）一篇笔记的学科质检结果
+  Future<void> saveAcademicReview(String noteId, String resultJson,
+      {String subject = 'general'}) async {
+    final db = await database;
+    await db.insert(
+      'academic_reviews',
+      {
+        'note_id': noteId,
+        'subject': subject,
+        'result_json': resultJson,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// 读取一篇笔记上次的质检结果（JSON 字符串），没有返回 null
+  Future<String?> academicReviewJson(String noteId) async {
+    final db = await database;
+    final rows = await db.query(
+      'academic_reviews',
+      columns: ['result_json'],
+      where: 'note_id = ?',
+      whereArgs: [noteId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['result_json'] as String?;
   }
 
   /// 空库时把 config.dart 的三本教材灌成种子。
