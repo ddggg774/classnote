@@ -14,7 +14,7 @@ class ShareInService {
 
   static const MethodChannel _channel = MethodChannel('classnote/share_in');
 
-  String? _pending;
+  final List<String> _pending = [];
   bool _inited = false;
   final StreamController<String> _incoming = StreamController.broadcast();
 
@@ -28,23 +28,22 @@ class ShareInService {
       if (call.method == 'onSharedText') {
         final text = call.arguments as String?;
         if (text != null && text.trim().isNotEmpty) {
-          _pending = text.trim();
-          _incoming.add(_pending!);
+          _pending.add(text.trim());
+          _incoming.add(text.trim());
         }
       }
       return null;
     });
     final initial = await _channel.invokeMethod<String>('getPendingText');
     if (initial != null && initial.trim().isNotEmpty) {
-      _pending = initial.trim();
-      _incoming.add(_pending!);
+      _pending.add(initial.trim());
+      _incoming.add(initial.trim());
     }
   }
 
   /// 取走待导入文本（取一次就清空，避免重复导入）
   String? takePending() {
-    final t = _pending;
-    _pending = null;
-    return t;
+    if (_pending.isEmpty) return null;
+    return _pending.removeAt(0);
   }
 }

@@ -242,8 +242,10 @@ class SearchIndex {
     int limit = 50,
   }) async {
     final database = db ?? _openDb();
-    final terms = tokenizeQuery(query);
+    var terms = tokenizeQuery(query);
     if (terms.isEmpty) return [];
+    // 长文本查询会产出上千个 bigram，超过 SQLite 的变量上限直接报错
+    if (terms.length > 200) terms = terms.take(200).toList();
 
     final placeholders = List.filled(terms.length, '?').join(',');
     final rows = await database.rawQuery('''
@@ -288,7 +290,8 @@ class SearchIndex {
     final like = '%$q%';
     final rows = await database.rawQuery('''
       SELECT id FROM notes
-      WHERE title LIKE ? OR transcript LIKE ? OR summary_json LIKE ?
+      WHERE COALESCE(status, 'done') != 'draft'
+        AND (title LIKE ? OR transcript LIKE ? OR translation_json LIKE ?)
       ORDER BY created_at DESC
       LIMIT ?
     ''', [like, like, like, limit]);

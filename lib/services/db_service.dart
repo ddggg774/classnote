@@ -437,8 +437,10 @@ class DbService {
     final db = await database;
     return db.query(
       'textbook_passages',
-      where: 'course = ?',
-      whereArgs: [course.trim()],
+      // 课程名手输容易差一个字（「植物学」vs「植物学（第三版）」），
+      // 精确匹配查不到时退化为包含匹配，避免摘录变成死数据
+      where: "(course = ? OR course LIKE ? OR ? LIKE '%' || course || '%')",
+      whereArgs: [course.trim(), '%${course.trim()}%', course.trim()],
       orderBy: 'created_at DESC',
     );
   }
@@ -627,15 +629,17 @@ class DbService {
   /// 删除一条笔记（连同它的外部改写版本、质检结果一起删，避免残留正文）
   Future<void> delete(String id) async {
     final db = await database;
-    await db.delete('notes', where: 'id = ?', whereArgs: [id]);
-    try {
-      await db.delete('note_rewrites', where: 'note_id = ?', whereArgs: [id]);
-      await db.delete('academic_reviews', where: 'note_id = ?', whereArgs: [id]);
-      // 知识库出处里存着笔记原文摘句，不删会留下「已删笔记的正文片段」
-      await db.delete('wiki_sources', where: 'note_id = ?', whereArgs: [id]);
-    } catch (_) {
-      // 老库没有这些表时忽略；不能因为清理失败就删不掉笔记
-    }
+    // 主表与子表放在同一事务里：中途被杀不会留下「笔记没了、改写正文还在」的孤儿
+    await db.transaction((txn) async {
+      await txn.delete('notes', where: 'id = ?', whereArgs: [id]);
+      for (final table in ['note_rewrites', 'academic_reviews', 'wiki_sources']) {
+        try {
+          await txn.delete(table, where: 'note_id = ?', whereArgs: [id]);
+        } catch (_) {
+          // 老库没有这些表时忽略；不能因为清理失败就删不掉笔记
+        }
+      }
+    });
     try {
       await _index.removeDoc(id, db: db);
     } catch (_) {}
@@ -689,10 +693,16 @@ class DbService {
     final cutoff = DateTime.now()
         .subtract(const Duration(hours: 24))
         .millisecondsSinceEpoch;
-    return db.delete(
+    // 走 delete(id) 而不是裸删：子表、索引一起清，避免残留正文
+    final rows = await db.query(
       'notes',
+      columns: ['id'],
       where: "status = ? AND transcript = '' AND title = '未命名课堂' AND created_at < ?",
       whereArgs: [Note.statusDraft, cutoff],
     );
+    for (final row in rows) {
+      await delete(row['id'] as String);
+    }
+    return rows.length;
   }
 }

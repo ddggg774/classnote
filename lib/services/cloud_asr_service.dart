@@ -387,6 +387,10 @@ class CloudAsrService {
         _recording = false;
         _chunkTimer?.cancel();
         _chunkTimer = null;
+        _currentPath = null;
+        // 录音已断：前台服务/唤醒锁必须一起收掉，否则通知栏一直挂着耗电
+        await _releaseKeepAlive();
+        _emit();
         _onError?.call('录音被中断（可能是被其他应用占用麦克风），请重新开始');
       }
     }
@@ -671,12 +675,17 @@ class CloudAsrService {
     }
 
     final err = jsonDecodeOrNull(response.body);
-    final text = err?['text'] as String?;
-    if (text == null || text.trim().isEmpty) {
-      // 空结果多半是这段没人说话或环境太吵，重试意义不大
-      throw AsrException('这一段没识别到文字，可能环境太吵或这段没人说话',
-          retryable: false);
+    if (err == null) {
+      // 200 但不是 JSON：校园网认证页/网关拦截/字段变更，重试有意义
+      throw AsrException('识别接口返回了非 JSON（可能被网关拦截），稍后自动重试',
+          retryable: true, statusCode: response.statusCode);
     }
+    final text = err['text'] as String?;
+    if (text == null) {
+      throw AsrException('识别结果缺少 text 字段，稍后自动重试',
+          retryable: true, statusCode: response.statusCode);
+    }
+    // 真空结果（这段没人说话）不算失败：返回空串，不占位、不进失败列表
     return text.trim();
   }
 

@@ -92,4 +92,14 @@ void main() {
     expect(await db.listNoteRewrites('n-del'), isEmpty);
     expect((await db.listNoteRewrites('n-other')).length, 1);
   });
+
+  test('课程名差一个字也能取到摘录（如「植物学（第三版）」）', () async {
+    final db = DbService();
+    await db.addTextbookPassage(
+      course: '植物学（第三版）',
+      text: '芋头为地下球茎，具环状节和退化叶。',
+    );
+    final hits = await db.listTextbookPassages('植物学');
+    expect(hits.length, 1);
+  });
 }

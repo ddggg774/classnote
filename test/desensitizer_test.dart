@@ -31,4 +31,16 @@ void main() {
     expect(out, isNot(contains('123456789')));
     expect(out, contains('QQ【已隐藏】'));
   });
+
+  test('带分隔符和 +86 的手机号也能脱敏', () {
+    for (final raw in [
+      '电话 138-0013-8000',
+      '电话 138 0013 8000',
+      '电话 +86 13800138000',
+    ]) {
+      final out = Desensitizer.apply(raw);
+      expect(out, contains('【手机号】'), reason: raw);
+      expect(out, isNot(contains('0013')), reason: raw);
+    }
+  });
 }

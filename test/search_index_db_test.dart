@@ -36,7 +36,8 @@ void main() {
         status TEXT NOT NULL DEFAULT 'done',
         terminology_json TEXT,
         course TEXT,
-        template_id TEXT
+        template_id TEXT,
+        translation_json TEXT
       )
     ''');
     await SearchIndex.createTables(db);

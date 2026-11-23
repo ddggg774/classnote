@@ -164,7 +164,6 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
 
     if (_draftId == null) {
       final id = const Uuid().v4();
-      _draftId = id;
       await _db.insert(Note(
         id: id,
         title: title,
@@ -180,9 +179,24 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
         sectionTitle: _section?.title,
         language: widget.mode.languageCode,
       ));
+      // 插入成功后再记 id：提前赋值会让并发保存查不到行而静默丢弃
+      _draftId = id;
     } else {
       final existing = await _db.queryById(_draftId!);
-      if (existing == null) return;
+      if (existing == null) {
+        // 草稿在首页被删了：用同一个 id 复活，别让后续保存全部静默失败
+        await _db.insert(Note(
+          id: _draftId!,
+          title: title,
+          transcript: text,
+          createdAt: DateTime.now(),
+          duration: _asr.recordedSeconds,
+          status: Note.statusDraft,
+          course: _course,
+          language: widget.mode.languageCode,
+        ));
+        return;
+      }
       await _db.update(existing.copyWith(
         title: title,
         transcript: text,

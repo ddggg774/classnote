@@ -6,13 +6,15 @@
 class Desensitizer {
   const Desensitizer._();
 
-  static final RegExp _phone = RegExp(r'(?<!\d)1[3-9]\d{9}(?!\d)');
+  // 容忍 138-0013-8000 / 138 0013 8000 / +86 138… 这几种手写格式
+  static final RegExp _phone = RegExp(
+      r'(?<!\d)(?:\+?86[- ]?)?1[3-9]\d[- ]?\d{4}[- ]?\d{4}(?!\d)');
   static final RegExp _idCard = RegExp(r'(?<!\d)\d{17}[\dXx](?!\d)');
   static final RegExp _email = RegExp(r'[\w.+-]+@[\w-]+\.[\w.]+');
   static final RegExp _studentNo =
       RegExp(r'(学号|工号|编号)\s*[:：]?\s*\d{6,}');
   static final RegExp _im =
-      RegExp(r'(QQ|微信|电话|手机)\s*[:：]?\s*[0-9A-Za-z_-]{5,}');
+      RegExp(r'(QQ|qq|微信|电话|手机)\s*[:：]?\s*[0-9A-Za-z_-]{5,}');
 
   static String apply(String text) {
     var out = text;
