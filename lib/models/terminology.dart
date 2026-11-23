@@ -309,6 +309,10 @@ class CalibrationReport {
   /// 转写可用性评估（质量过低时才有内容）
   final String? usability;
 
+  /// 因「待确认预算」被压掉的条数（模型自报 + 程序截断）。
+  /// 界面用它显示「另有 N 处未列出」，保证不静默丢信息。
+  final int suppressedCount;
+
   const CalibrationReport({
     required this.annotatedText,
     this.hits = const [],
@@ -316,6 +320,7 @@ class CalibrationReport {
     this.pending = const [],
     this.micAdvice = const [],
     this.usability,
+    this.suppressedCount = 0,
   });
 
   int get fixCount => hits.where((h) => h.corrected).length;
@@ -353,6 +358,7 @@ class CalibrationReport {
       }).toList(),
       micAdvice: micAdvice,
       usability: usability,
+      suppressedCount: suppressedCount,
     );
   }
 }

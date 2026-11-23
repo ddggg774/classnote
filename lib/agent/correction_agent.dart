@@ -17,6 +17,7 @@
 // 如果工具只是"返回一句 OK"，那这套 Agent 就是假的——这点我很在意。
 import '../config.dart';
 import '../models/terminology.dart';
+import '../services/pending_budget.dart';
 import '../services/terminology_service.dart';
 import 'agent_loop.dart';
 import 'agent_tool.dart';
@@ -79,6 +80,10 @@ A. 明显拼写错误：recieve → receive
 B. 专有名词大小写/连字符：darwin → Darwin
 C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
 
+## 待确认预算（硬性）
+- flag_uncertain 最多 5 次；只标最值得回听的 5 处；
+- 纯标点/数字/单字、原文本来就对、能高置信改的，不标。
+
 ## 严禁
 - 把英文翻译成中文；不许新增原文没有的汉字（原文本身的中文解释保留）
 - 改写句子结构、删减内容、润色、合并句子
@@ -102,6 +107,11 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
    拿到术语表后，才能判断某个词是不是听错了。
 2. flag_uncertain(span, candidates) —— 拿不准的地方，标出来交给人回听。
 3. mark_missing(context) —— 句子明显缺词、逻辑断裂时，标出缺失位置。
+
+## 待确认预算（硬性）
+- flag_uncertain 最多调用 5 次；超过 5 处疑似的，只标最值得人回听的 5 处；
+- 排序：命中高优先术语 > 同一处反复出现 > 候选唯一 > 其他；
+- 纯标点/纯数字/单字、原文通顺且非术语、你能高置信直接改的，一律不标。
 
 ## 三档处理规则（严格执行）
 
@@ -302,10 +312,22 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
 
     final result = await loop.run(task.toString());
 
+    // 预算收口：过滤噪音、合并同义、排序、截断到 5 条
+    final trimmed = PendingBudget.trim(
+      session.pending,
+      max: PendingBudget.defaultMax,
+      highPriorityTerms: session.pack?.terms
+              .where((t) => t.level == TermLevel.high)
+              .map((t) => t.term)
+              .toSet() ??
+          const {},
+    );
+
     return CorrectionAgentResult(
       summary: result.answer,
       steps: result.steps,
-      pending: session.pending,
+      pending: trimmed.kept,
+      suppressedCount: trimmed.suppressed,
       missing: session.missing,
       pack: session.pack,
       hitStepLimit: result.hitStepLimit,
@@ -324,6 +346,9 @@ class CorrectionAgentResult {
   final bool hitStepLimit;
   final bool failed;
 
+  /// 因预算被压掉的待确认条数（界面显示「另有 N 处未列出」）
+  final int suppressedCount;
+
   const CorrectionAgentResult({
     required this.summary,
     this.steps = const [],
@@ -332,6 +357,7 @@ class CorrectionAgentResult {
     this.pack,
     this.hitStepLimit = false,
     this.failed = false,
+    this.suppressedCount = 0,
   });
 
   String get logText => steps.map((s) => s.line).join('\n');

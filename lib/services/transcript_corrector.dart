@@ -23,6 +23,7 @@ import 'package:http/http.dart' as http;
 
 import '../config.dart';
 import '../models/terminology.dart';
+import 'pending_budget.dart';
 import 'settings_service.dart';
 
 class TranscriptCorrector {
@@ -58,6 +59,20 @@ class TranscriptCorrector {
 〔此处可能缺失：前文在讲……，后文转向……，中间内容待确认〕
 保留缺口信息比强行补全更有价值。
 
+## 待确认预算（硬性，优先级高于"拿不准就标"）
+- 全文最多输出 5 条 pending，按下面的顺序挑最值得人回听的 5 条，其余**不要输出**，
+  只把被砍掉的条数写进 suppressedCount。
+- 排序依据（从高到低）：
+  1. 命中了术语表中「高优先级」术语的疑似误听；
+  2. 同一处疑似在文中反复出现（pending 里 count ≥ 2）；
+  3. 候选唯一、且与原文只差一个音或一个字母；
+  4. 其他。
+- 以下情况**一律不标**：
+  · 片段长度小于 2 个字符、纯标点、纯数字；
+  · 原文本身通顺、又不是术语（改不改都不影响笔记正确性）；
+  · 你已经能高置信修正的（放进规则 A 直接改，不要既改又标）。
+- 标了就必须给 candidates（1–2 个），不要给空候选。
+
 ## 硬性约束
 - 不改变老师原意的逻辑结构，不做润色式重写；
 - 所有修改必须可追溯：要么匹配术语表，要么有音素/拼音依据，要么有上下文唯一性依据；
@@ -71,7 +86,8 @@ class TranscriptCorrector {
   "missedTerms": ["术语表中完全未出现的术语"],
   "pending": [{"snippet":"原文片段","candidates":["候选1","候选2"],"count":1,"timestamp":"03:20"}],
   "micAdvice": ["针对本节实际暴露问题的拾音建议"],
-  "usability": "仅当质量过低时填写评估，否则空字符串"
+  "usability": "仅当质量过低时填写评估，否则空字符串",
+  "suppressedCount": 0
 }
 
 ## 字段说明
@@ -93,6 +109,11 @@ B. 专有名词大小写/连字符：darwin → Darwin，cellwall → cell wall
 C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
    改完在该句末尾标 〔改：原→正〕
 
+## 待确认预算（硬性）
+- 全文最多 5 条 pending，按「命中高优先术语 > 反复出现 > 候选唯一」排序后取前 5，其余不输出；
+- 被砍掉的条数写进 suppressedCount；
+- 纯标点/纯数字/长度 < 2、原文本来就正确、或你已能高置信修正的，一律不标。
+
 ## 严禁
 - 把英文翻译成中文；不许新增原文没有的汉字（原文本身的中文解释保留）
 - 改写句子结构、删减内容、润色语法、合并句子
@@ -110,7 +131,8 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
   "missedTerms": ["术语表里有但完全没出现的术语"],
   "pending": [{"snippet":"原文片段","candidates":["候选1","候选2"],"count":1}],
   "micAdvice": ["针对本节暴露的拾音建议"],
-  "usability": "仅当质量过低时填写，否则空字符串"
+  "usability": "仅当质量过低时填写，否则空字符串",
+  "suppressedCount": 0
 }
 ''';
 
@@ -140,9 +162,29 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
         ? ''
         : '\n## 本节课 initial_prompt（术语提示）\n${pack!.initialPrompt}\n';
 
-    // 短文本一次处理；长文本分块
+    // 短文本一次处理，同样要过一遍预算
     if (trimmed.length <= chunkChars) {
-      return _calibrateChunk(apiKey, trimmed, termBlock, promptBlock, systemPrompt);
+      final r = await _calibrateChunk(
+          apiKey, trimmed, termBlock, promptBlock, systemPrompt);
+      final budget = PendingBudget.trim(
+        r.pending,
+        max: PendingBudget.defaultMax,
+        highPriorityTerms: pack?.terms
+                .where((t) => t.level == TermLevel.high)
+                .map((t) => t.term)
+                .toSet() ??
+            const {},
+        modelSuppressed: r.suppressedCount,
+      );
+      return CalibrationReport(
+        annotatedText: r.annotatedText,
+        hits: r.hits,
+        missedTerms: r.missedTerms,
+        pending: budget.kept,
+        micAdvice: r.micAdvice,
+        usability: r.usability,
+        suppressedCount: budget.suppressed,
+      );
     }
 
     final chunks = _split(trimmed);
@@ -152,6 +194,7 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
     final allMissed = <String>{};
     final allAdvice = <String>[];
     String? usability;
+    var modelSuppressed = 0;
 
     for (final chunk in chunks) {
       final r = await _calibrateChunk(apiKey, chunk, termBlock, promptBlock, systemPrompt);
@@ -163,16 +206,34 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
         if (!allAdvice.contains(a)) allAdvice.add(a);
       }
       usability ??= r.usability;
+      modelSuppressed += r.suppressedCount;
     }
+
+    // 同一术语在多个块里命中时合并计数
+    final mergedHits = _mergeHits(allHits);
+    final mergedPending = _mergePending(allPending);
+
+    // 预算收口：过滤噪音、合并同义、排序、截断到 5 条
+    final budget = PendingBudget.trim(
+      mergedPending,
+      max: PendingBudget.defaultMax,
+      highPriorityTerms: pack?.terms
+              .where((t) => t.level == TermLevel.high)
+              .map((t) => t.term)
+              .toSet() ??
+          const {},
+      // 短文本路径没有累加模型自报，这里只加程序截断
+      modelSuppressed: modelSuppressed,
+    );
 
     return CalibrationReport(
       annotatedText: annotated.join('\n'),
-      // 同一术语在多个块里命中时合并计数
-      hits: _mergeHits(allHits),
+      hits: mergedHits,
       missedTerms: allMissed.toList(),
-      pending: _mergePending(allPending),
+      pending: budget.kept,
       micAdvice: allAdvice.take(3).toList(),
       usability: usability,
+      suppressedCount: budget.suppressed,
     );
   }
 
@@ -273,6 +334,7 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
           .toList();
 
       final usability = (d['usability'] as String?)?.trim() ?? '';
+      final suppressed = (d['suppressedCount'] as num?)?.toInt() ?? 0;
 
       return CalibrationReport(
         annotatedText: annotated,
@@ -281,6 +343,7 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
         pending: pending,
         micAdvice: advice,
         usability: usability.isEmpty ? null : usability,
+        suppressedCount: suppressed < 0 ? 0 : suppressed,
       );
     } catch (_) {
       throw Exception('校准结果解析失败，原文未改动');

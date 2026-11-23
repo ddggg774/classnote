@@ -90,6 +90,10 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 这个是历史存档，两者不互相覆盖。
   List<PendingItem> _savedPending = const [];
 
+  /// 待确认列表是否展开（默认只显示前 3 条，避免一屏几十条压垮人）
+  bool _showAllReportPending = false;
+  bool _showAllSavedPending = false;
+
   /// 额外技能产出（考点清单 / 复习题）
   Map<String, String> _extras = const {};
   /// 校准前的原文，用于撤销
@@ -886,6 +890,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 上次「一键处理」留下的待确认项。
   /// 与本次校准报告分开显示：这是历史存档，重进页面也还在。
   Widget _buildSavedPendingPanel() {
+    final shown = _showAllSavedPending
+        ? _savedPending
+        : _savedPending.take(3).toList();
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
@@ -930,8 +937,31 @@ class _NoteDetailPageState extends State<NoteDetailPage>
             '点一下可跳到原文对应位置回听',
             style: TextStyle(fontSize: 11, color: Colors.orange.shade700),
           ),
+          Row(
+            children: [
+              TextButton(
+                onPressed: _correcting ? null : _applyAllSavedFirstChoice,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('全部按首选', style: TextStyle(fontSize: 11.5)),
+              ),
+              TextButton(
+                onPressed: _correcting ? null : _ignoreAllSaved,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('全部忽略',
+                    style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+              ),
+            ],
+          ),
           const SizedBox(height: 4),
-          ..._savedPending.map((p) => InkWell(
+          ...shown.map((p) => InkWell(
                 // 有候选就能直接选一个替换；没候选的只定位
                 onTap: () => _openPendingActions(p),
                 borderRadius: BorderRadius.circular(4),
@@ -971,6 +1001,23 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                   ),
                 ),
               )),
+          if (_savedPending.length > 3)
+            TextButton(
+              onPressed: () => setState(
+                  () => _showAllSavedPending = !_showAllSavedPending),
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(
+                _showAllSavedPending
+                    ? '收起'
+                    : '展开其余 ${_savedPending.length - 3} 条',
+                style:
+                    TextStyle(fontSize: 11.5, color: Colors.indigo.shade600),
+              ),
+            ),
         ],
       ),
     );
@@ -1205,7 +1252,97 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     _showSnack('已清除待确认清单');
   }
 
+  /// 批量：把所有带候选的待确认项按「首选候选」替换。
+  /// 逐条替换、每条都重算位置；替换前给一次确认，替换后仍可撤销。
+  Future<void> _applyAllSavedFirstChoice() async {
+    final targets =
+        _savedPending.where((p) => p.candidates.isNotEmpty).toList();
+    if (targets.isEmpty) {
+      _showSnack('没有带候选的待确认项');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('按首选候选批量替换'),
+        content: Text(
+          '将把 ${targets.length} 处待确认按各自的首选候选替换，'
+          '替换后仍可撤销。\n\n建议先展开看一眼，确认这些首选都靠谱。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('替换'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    final original = _transcriptController.text;
+    var text = original;
+    var remaining = List<PendingItem>.from(_savedPending);
+    var replacedTotal = 0;
+
+    for (final item in targets) {
+      final result =
+          PendingFixer.apply(text, item, item.candidates.first);
+      if (!result.changed) continue;
+      text = result.text;
+      replacedTotal += result.replaced;
+      remaining = remaining
+          .where((p) =>
+              !(p.snippet == item.snippet &&
+                  p.candidates.join('/') == item.candidates.join('/')))
+          .toList();
+      remaining = PendingFixer.relocateAll(text, remaining);
+    }
+
+    if (replacedTotal == 0) {
+      _showSnack('没有替换成功，原文可能已被改动');
+      return;
+    }
+
+    setState(() => _undoTranscript = original);
+    _transcriptController.text = text;
+    await _persistPendingChange(text, remaining);
+    if (!mounted) return;
+    setState(() => _savedPending = remaining);
+    _showSnack('已批量替换 $replacedTotal 处');
+  }
+
+  /// 批量忽略：只清清单，不改正文。先确认，避免手滑。
+  Future<void> _ignoreAllSaved() async {
+    if (_savedPending.isEmpty) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('全部忽略'),
+        content: Text('将清空 ${_savedPending.length} 条待确认，正文不会改动。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('忽略'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await _clearSavedPending();
+  }
+
   Widget _buildReportPanel(CalibrationReport report) {
+    final pendingShown = _showAllReportPending
+        ? report.pending
+        : report.pending.take(3).toList();
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
@@ -1272,7 +1409,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           if (report.pending.isNotEmpty) ...[
             const SizedBox(height: 8),
             _reportSectionTitle('待确认清单'),
-            ...report.pending.take(6).map((p) => InkWell(
+            ...pendingShown.map((p) => InkWell(
                   // 有候选就能选替换；没候选且能定位就只定位
                   onTap: (p.candidates.isNotEmpty || p.canLocate)
                       ? () => _openPendingActions(p)
@@ -1313,10 +1450,28 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                     ),
                   ),
                 )),
-            if (report.pending.length > 6)
-              Text('…等共 ${report.pending.length} 处',
-                  style:
-                      TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+            if (report.pending.length > 3)
+              TextButton(
+                onPressed: () => setState(
+                    () => _showAllReportPending = !_showAllReportPending),
+                style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text(
+                  _showAllReportPending
+                      ? '收起'
+                      : '展开其余 ${report.pending.length - 3} 条',
+                  style: TextStyle(
+                      fontSize: 11.5, color: Colors.indigo.shade600),
+                ),
+              ),
+            if (report.suppressedCount > 0)
+              Text(
+                '另有 ${report.suppressedCount} 处低置信，未逐条列出',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+              ),
           ],
 
           // ④ 拾音建议
