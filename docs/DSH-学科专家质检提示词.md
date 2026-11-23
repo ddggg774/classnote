@@ -136,6 +136,20 @@
 
 **换语义模型的接口**：只需替换 `LocalEmbedder.embed()` 的实现（比如调 bge-m3 拿 1024 维），`EvidenceIndex` 与检索逻辑不用改。真要上云 embedding，得先改隐私条款。
 
+### 联网检索维基（v2.2.0）
+
+按「先查后判」实现：
+
+- 新增 `WikiSearchService`：调中文维基 MediaWiki API（`generator=search` + `extracts`），返回 `title/extract/url`；
+- 每句审阅时，若开关开启，先检索这句（截到 60 字）的公开条目摘要，作为 `【维基百科】标题：摘要` 塞进 `RAG_EVIDENCE`；
+- 提示词加规则 0：**先查后判**，`evidence` 必须摘抄检索结果原句，搜不到证据只能判 `warning`/`correct`；
+- 程序侧沿用接地校验：`evidence` 与提供的依据无二字组重叠 → 自动降 `warning`；
+- 网络失败/超时（维基在大陆网络常不可达）返回空列表，质检退化为只用本机知识库，不阻塞、不报错。
+
+隐私：免责声明升到 **1.1**（2026-11-23），新增「质检的联网检索（维基百科）」条款，写明只发送待查术语、不发送整篇笔记；设置里可随时关闭（`wiki_search_enabled`，默认开）。
+
+**未能验证**：本机 `curl zh.wikipedia.org`、`api.wikimedia.org`、`zh.m.wikipedia.org` 全部超时（`http=000`），所以真实检索链路没跑过；单测用注入的假响应覆盖解析与降级。
+
 ### 实体书怎么办（v2.1.0）
 
 用户只有实体书，没有教材正文。两条路：

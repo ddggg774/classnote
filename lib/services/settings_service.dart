@@ -25,6 +25,8 @@ class SettingsService {
   /// 转写完成后是否自动 AI 纠错
   static const String _keyAutoCorrect = 'auto_correct_enabled';
   static const String _keyCaptureProfile = 'capture_profile';
+  /// 质检时是否联网检索中文维基（隐私条款 v1.1 已披露；默认开启，可在设置关闭）
+  static const String _keyWikiSearch = 'wiki_search_enabled';
 
   /// 免责声明：已同意的版本号与同意时间（本机记录，不上传）
   static const String _keyDisclaimerVersion = 'disclaimer_version';
@@ -172,5 +174,16 @@ class SettingsService {
   Future<void> saveCaptureProfile(String code) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyCaptureProfile, code);
+  }
+
+  /// 质检是否联网检索维基百科（默认开启）
+  Future<bool> getWikiSearchEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyWikiSearch) ?? true;
+  }
+
+  Future<void> saveWikiSearchEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyWikiSearch, enabled);
   }
 }

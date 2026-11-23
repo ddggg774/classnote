@@ -157,6 +157,7 @@ class AcademicReviewService {
 你是一位极其严谨、只认证据的{{SUBJECT_NAME}}审稿专家。你的任务是审阅单条课堂笔记，判断其是否存在知识性硬伤。
 
 # Crucial Rules (核心纪律，必须严格遵守)
+0. **先查后判**：如果【可参考的教材片段】里提供了【维基百科】检索结果，必须先看它再判断；你的 evidence 必须摘抄其中原句。搜索结果不足以证明笔记有错时，只能判 warning 或 correct，严禁直接判 fatal_error。
 1. **上下文隔离**：你当前只需要且只能对【待审句子】负责。不管前一秒看了什么错误概念，绝不能把上一句的错误前提代入到当前句子中进行推断。
 2. **证据驱动**：如果没有 100% 的把握，或者无法在你的知识库中检索到确切依据，**严禁凭空臆断**。宁可不报错，也绝不能误报。
 3. **区分概念**：严格区分各类易混概念与形态学特征。
@@ -308,7 +309,7 @@ class AcademicReviewService {
     String course = '',
     int maxSentences = 60,
     List<ReviewEvidence> evidence = const [],
-    List<ReviewEvidence> Function(String sentence)? retriever,
+    Future<List<ReviewEvidence>> Function(String sentence)? retriever,
     void Function(int done, int total)? onProgress,
   }) async {
     final text = noteText.trim();
@@ -341,7 +342,10 @@ class AcademicReviewService {
           merged.add(e);
         }
 
-        retriever?.call(limited[i]).forEach(take);
+        if (retriever != null) {
+          final remote = await retriever(limited[i]);
+          remote.forEach(take);
+        }
         pickEvidence(limited[i], evidence).forEach(take);
         final picked = merged;
         pickedPer[i] = picked;

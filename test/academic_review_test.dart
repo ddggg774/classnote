@@ -282,7 +282,7 @@ void main() {
       });
       final r = await svc.reviewAllSentences(
         '芋头是典型的块茎。',
-        retriever: (sentence) => const [
+        retriever: (sentence) async => const [
           ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶', source: '课堂笔记'),
         ],
       );
@@ -299,7 +299,7 @@ void main() {
       });
       final r = await svc.reviewAllSentences(
         '芋头是典型的块茎。',
-        retriever: (sentence) => const [
+        retriever: (sentence) async => const [
           ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶'),
         ],
       );

@@ -21,6 +21,7 @@ import '../models/summary_level.dart';
 import '../services/academic_review_service.dart';
 import '../services/db_service.dart';
 import '../services/local_vector.dart';
+import '../services/wiki_search_service.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
 import '../services/pending_fixer.dart';
@@ -1641,15 +1642,27 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       if (mode == 'sentence') {
         final evidence = await _buildReviewEvidence(_note);
         final index = await _buildEvidenceIndex(_note?.effectiveCourse ?? '');
+        final wikiOn = await SettingsService().getWikiSearchEnabled();
+        final wiki = WikiSearchService();
         if (!mounted) return;
         review = await _academicReviewer.reviewAllSentences(
           source,
           course: _note?.course ?? '',
           evidence: evidence,
-          retriever: (sentence) => index
-              .search(sentence, k: 2)
-              .map((r) => ReviewEvidence(r.doc.text, source: r.doc.source))
-              .toList(),
+          retriever: (sentence) async {
+            final out = <ReviewEvidence>[];
+            if (wikiOn) {
+              final snippets = await wiki.search(sentence, limit: 2);
+              for (final s in snippets) {
+                out.add(ReviewEvidence('${s.title}：${s.extract}',
+                    source: '维基百科'));
+              }
+            }
+            out.addAll(index
+                .search(sentence, k: 2)
+                .map((r) => ReviewEvidence(r.doc.text, source: r.doc.source)));
+            return out;
+          },
           onProgress: (done, total) {
             if (!mounted) return;
             setState(() => _reviewProgress = '已审 $done/$total 句');

@@ -30,6 +30,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String _asrModel = AppConfig.asrModel;
   /// 转写后是否自动 AI 纠错
   bool _autoCorrect = false;
+  bool _wikiSearch = true;
   CaptureProfile _captureProfile = CaptureProfile.normal;
 
   /// 技能启停（id → 是否启用）
@@ -48,6 +49,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final model = await _settings.getAsrModel();
     final glossary = await _settings.getGlossary();
     final auto = await _settings.getAutoCorrect();
+    final wiki = await _settings.getWikiSearchEnabled();
     final profileCode = await _settings.getCaptureProfile();
     final profile = CaptureProfile.fromCode(profileCode);
     final skills = await SkillRegistry().overview();
@@ -58,6 +60,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _glossaryController.text = glossary;
         _asrModel = model;
         _autoCorrect = auto;
+        _wikiSearch = wiki;
         _captureProfile = profile;
         _skillEnabled = {for (final s in skills) s.skill.id: s.enabled};
         _skillsLoaded = true;
@@ -107,6 +110,7 @@ class _SettingsPageState extends State<SettingsPage> {
     await _settings.saveAsrModel(_asrModel);
     await _settings.saveGlossary(_glossaryController.text);
     await _settings.saveAutoCorrect(_autoCorrect);
+    await _settings.saveWikiSearchEnabled(_wikiSearch);
     await _settings.saveCaptureProfile(_captureProfile.name);
     if (_skillsLoaded) {
       await SkillRegistry().saveEnabledIds(
@@ -326,6 +330,19 @@ class _SettingsPageState extends State<SettingsPage> {
                         TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
                   onChanged: (v) => setState(() => _autoCorrect = v),
+                ),
+                SwitchListTile(
+                  value: _wikiSearch,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('学科质检时检索维基百科',
+                      style: TextStyle(fontSize: 14)),
+                  subtitle: Text(
+                    '只把待查的术语发给中文维基（不发送整篇笔记）；'
+                    '关闭后质检只用本地知识库。网络不可达时自动跳过。',
+                    style:
+                        TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                  onChanged: (v) => setState(() => _wikiSearch = v),
                 ),
 
                 // ── 拾音档位 ──

@@ -118,7 +118,7 @@ void main() {
       sampleBirdNote,
       course: '植物学',
       evidence: evidence,
-      retriever: (sentence) => index
+      retriever: (sentence) async => index
           .search(sentence, k: 2)
           .map((r) => ReviewEvidence(r.doc.text, source: r.doc.source))
           .toList(),
