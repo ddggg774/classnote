@@ -77,8 +77,12 @@ class _WikiPageState extends State<WikiPage> {
     await _reloadEntries();
   }
 
+  int _loadSeq = 0;
+
   Future<void> _reloadEntries() async {
     if (_course.isEmpty) return;
+    // 连续输入/快速切课时，先发的慢请求可能后到；用序号丢弃过期结果
+    final seq = ++_loadSeq;
     final entries = await _wiki.listByCourse(
       _course,
       type: _typeFilter,
@@ -89,7 +93,7 @@ class _WikiPageState extends State<WikiPage> {
       final s = await _wiki.sourcesOf(e.id);
       counts[e.id] = s.length;
     }
-    if (!mounted) return;
+    if (!mounted || seq != _loadSeq) return;
     setState(() {
       _entries = entries;
       _sourceCounts

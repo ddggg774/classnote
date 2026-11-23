@@ -245,7 +245,7 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
     );
 
     return CalibrationReport(
-      annotatedText: annotated.join('\n'),
+      annotatedText: annotated.join(''),
       hits: mergedHits,
       missedTerms: allMissed.toList(),
       pending: budget.kept,
@@ -311,27 +311,34 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
 
       // 关键防线：模型没给正文时保留原文，绝不返回空。
       // 注意：pending / hits 仍然要解析——不能因为正文空就把待确认也吞掉。
-      final annotated = (d['annotatedText'] as String?)?.trim() ?? '';
+      final annotated =
+          d['annotatedText'] is String ? (d['annotatedText'] as String).trim() : '';
 
-      final hits = ((d['hits'] as List?) ?? [])
-          .whereType<Map<String, dynamic>>()
+      List<dynamic> asList(dynamic v) => v is List ? v : const [];
+      int asInt(dynamic v, {int fallback = 1}) {
+        if (v is num) return v.toInt();
+        return int.tryParse('$v') ?? fallback;
+      }
+
+      final hits = asList(d['hits'])
+          .whereType<Map>()
           .map((m) => TermHit(
                 term: (m['term'] ?? '').toString(),
                 corrected: m['corrected'] == true,
-                occurrences: (m['occurrences'] as num?)?.toInt() ?? 1,
+                occurrences: asInt(m['occurrences']),
               ))
           .where((h) => h.term.isNotEmpty)
           .toList();
 
-      final pending = ((d['pending'] as List?) ?? [])
-          .whereType<Map<String, dynamic>>()
+      final pending = asList(d['pending'])
+          .whereType<Map>()
           .map((m) => PendingItem(
                 snippet: (m['snippet'] ?? '').toString(),
-                candidates: ((m['candidates'] as List?) ?? [])
+                candidates: asList(m['candidates'])
                     .map((e) => e.toString())
                     .where((e) => e.trim().isNotEmpty)
                     .toList(),
-                count: (m['count'] as num?)?.toInt() ?? 1,
+                count: asInt(m['count']),
                 timestamp: (m['timestamp'] as String?)?.trim().isEmpty == true
                     ? null
                     : m['timestamp'] as String?,
@@ -339,7 +346,7 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
           .where((p) => p.snippet.isNotEmpty)
           .toList();
 
-      final missed = ((d['missedTerms'] as List?) ?? [])
+      final missed = asList(d['missedTerms'])
           .map((e) => e.toString().trim())
           .where((e) => e.isNotEmpty)
           .toList();

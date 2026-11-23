@@ -59,6 +59,38 @@ class PendingFixer {
       );
     }
 
+    // 有位置信息时按位置替换：归一化合并后同一处可能有不同写法，
+    // 只按 snippet 精确查找会漏掉另一种写法却把清单删掉。
+    final positions = item.positions
+        .where((p) => p >= 0 && p + snippet.length <= text.length)
+        .toList()
+      ..sort();
+    if (positions.isNotEmpty &&
+        positions.any((p) => text.substring(p, p + snippet.length) == snippet)) {
+      final buffer = StringBuffer();
+      var cursor = 0;
+      var replaced = 0;
+      for (final pos in positions) {
+        if (pos < cursor) continue;
+        buffer.write(text.substring(cursor, pos));
+        buffer.write(replacement);
+        cursor = pos + snippet.length;
+        replaced++;
+        if (!all) break;
+      }
+      buffer.write(text.substring(cursor));
+      if (replaced > 0) {
+        final newText = buffer.toString();
+        return FixResult(
+          text: newText,
+          replaced: replaced,
+          remainingPending: all
+              ? const []
+              : _relocate(newText, item, keep: true),
+        );
+      }
+    }
+
     // 新文本用 StringBuffer 拼，避免多次 substring 产生大量中间串
     final buffer = StringBuffer();
     var cursor = 0;

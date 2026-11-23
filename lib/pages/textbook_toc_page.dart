@@ -152,6 +152,23 @@ class _TextbookTocPageState extends State<TextbookTocPage> {
                         fontSize: 13, color: Colors.grey.shade700, height: 1.5),
                   )
                 else ...[
+                  if (_chapters.isNotEmpty) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      margin: const EdgeInsets.only(bottom: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '现有目录 ${_chapters.length} 章，导入会先清空再写入；'
+                        '手录的章节会被这次粘贴的内容替换。',
+                        style: TextStyle(
+                            fontSize: 12, color: Colors.red.shade900),
+                      ),
+                    ),
+                  ],
                   Text(
                     '${current.chapterCount} 章 · ${current.sectionCount} 节',
                     style: const TextStyle(

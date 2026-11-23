@@ -134,11 +134,21 @@ variants 填别称、常见误听写法（可空数组）；related 填关联词
     final candidates = parseCandidates(raw);
     if (candidates.isEmpty) return const WikiExtractResult();
 
-    return mergeCandidates(
+    final merged = await mergeCandidates(
       course: course,
       note: note,
       candidates: candidates.take(maxCandidatesPerNote).toList(),
     );
+    if (note.transcript.length > maxInputChars) {
+      return WikiExtractResult(
+        created: merged.created,
+        appendedSources: merged.appendedSources,
+        conflicts: merged.conflicts,
+        skipped: merged.skipped,
+        note: '正文过长，仅抽取了前 $maxInputChars 字',
+      );
+    }
+    return merged;
   }
 
   /// 把候选词条并入知识库。

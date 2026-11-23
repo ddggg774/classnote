@@ -46,4 +46,11 @@ void main() {
     expect(index.search('薛定谔方程'), isEmpty);
     expect(EvidenceIndex.build(const []).search('任意'), isEmpty);
   });
+
+  test('只共享单字、不共享二字组的文本不会被当依据', () {
+    final index = EvidenceIndex.build(const [
+      VectorDoc('红掌：天南星科，花序外包被佛焰苞', source: '知识库'),
+    ]);
+    expect(index.search('芋头属于球茎还是块茎'), isEmpty);
+  });
 }

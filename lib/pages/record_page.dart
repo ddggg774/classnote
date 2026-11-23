@@ -957,6 +957,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
             );
             if (leave == true) {
               if (_asr.isRecording) await _asr.stopRecording();
+              // 转写中退出：把剩余段标失败，别让它们只在内存里凭空消失
+              if (_recognizing) _asr.abandonPendingSegments();
               await _persistDraft(force: true);
               if (!mounted) return;
               Navigator.of(this.context).pop();

@@ -35,11 +35,56 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 技能启停（id → 是否启用）
   Map<String, bool> _skillEnabled = {};
   bool _skillsLoaded = false;
+  /// 进入页面时的字段快照：返回时据此判断有没有未保存修改
+  String _initialSignature = '';
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  String _signature() {
+    final skills = _skillEnabled.entries
+        .where((e) => e.value)
+        .map((e) => e.key)
+        .toList()
+      ..sort();
+    return [
+      _deepSeekController.text,
+      _asrController.text,
+      _glossaryController.text,
+      _asrModel,
+      '$_autoCorrect',
+      _captureProfile.name,
+      skills.join(','),
+    ].join('|');
+  }
+
+  Future<void> _handlePop(bool didPop, Object? result) async {
+    if (didPop) return;
+    if (_loading || _signature() == _initialSignature) {
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('有未保存的修改'),
+        content: const Text('直接返回会丢掉这次改的 Key、术语表或开关。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('继续编辑'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('放弃修改'),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && mounted) Navigator.of(context).pop();
   }
 
   Future<void> _load() async {
@@ -63,6 +108,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _skillsLoaded = true;
         _loading = false;
       });
+      _initialSignature = _signature();
     }
   }
 
@@ -157,6 +203,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _showSnack(String msg) {
+    _initialSignature = _signature();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
@@ -216,7 +263,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: _handlePop,
+      child: Scaffold(
       appBar: AppBar(title: const Text('设置')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
@@ -494,6 +544,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ],
             ),
+      ),
     );
   }
 }

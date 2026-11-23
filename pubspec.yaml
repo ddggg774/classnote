@@ -1,7 +1,7 @@
 name: classnote
 description: 课堂实时语音转写、AI 总结与思维导图生成 App
 publish_to: 'none'
-version: 2.6.0+23
+version: 2.7.0+24
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

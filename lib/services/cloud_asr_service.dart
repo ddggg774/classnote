@@ -356,8 +356,19 @@ class CloudAsrService {
     }
   }
 
+  /// 录音落应用私有目录（不是系统缓存）：缓存会被系统清理，
+  /// 正在录或待补传的段不该被外部删掉。
+  Future<Directory> _recordingsDir() async {
+    final base = await getApplicationSupportDirectory();
+    final dir = Directory('${base.path}/recordings');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir;
+  }
+
   Future<void> _startNewChunk() async {
-    final dir = await getTemporaryDirectory();
+    final dir = await _recordingsDir();
     _currentPath =
         '${dir.path}/classnote_${DateTime.now().microsecondsSinceEpoch}_$_chunkIndex.wav';
     await _recorder.start(_profile.toRecordConfig(), path: _currentPath!);
@@ -406,6 +417,17 @@ class CloudAsrService {
   }
 
   /// 停止录音：停掉计时器和当前段，等所有段识别完（或超时）再返回
+  /// 用户强制退出、不再等待时调用：把队列里的段标为失败并保留音频文件。
+  void abandonPendingSegments() {
+    for (final idx in _queue) {
+      final path = _paths[idx];
+      if (path != null) _failed[idx] = path;
+    }
+    _queue.clear();
+    _queued.clear();
+    _emit();
+  }
+
   Future<void> stopRecording({Duration timeout = const Duration(seconds: 120)}) {
     return _exclusive(() => _stopInner(timeout: timeout));
   }
@@ -557,7 +579,18 @@ class CloudAsrService {
         final path = entry.value;
         _setNotice('正在补传第 ${idx + 1} 段…');
         try {
-          final text = await recognize(path);
+          String? text;
+          for (var attempt = 0; attempt <= _retryDelays.length; attempt++) {
+            try {
+              text = await recognize(path);
+              break;
+            } on AsrException catch (e) {
+              if (!e.retryable || attempt == _retryDelays.length) rethrow;
+              await Future<void>.delayed(_retryDelays[attempt]);
+              if (_disposed) return;
+            }
+          }
+          if (text == null) throw AsrException('补传失败，可再试一次');
           if (_disposed) return;
           // 该段原本在正文里已留下占位，补传结果明确标注段号追加到末尾，
           // 用户一眼能看出它属于哪里，不会误以为顺序错乱。
@@ -591,7 +624,7 @@ class CloudAsrService {
   /// 清掉上次崩溃/强杀遗留的临时音频，避免缓存目录无限增长
   Future<void> _sweepStaleFiles() async {
     try {
-      final dir = await getTemporaryDirectory();
+      final dir = await _recordingsDir();
       final cutoff =
           DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
       await for (final entity in dir.list()) {
@@ -638,16 +671,25 @@ class CloudAsrService {
       ..files.add(await http.MultipartFile.fromPath('file', filePath,
           filename: 'audio.wav'));
 
-    late final http.StreamedResponse streamed;
+    final client = http.Client();
+    late final http.Response response;
     try {
-      streamed = await request.send().timeout(const Duration(seconds: 120));
+      final streamed = await client
+          .send(request)
+          .timeout(const Duration(seconds: 120));
+      // 响应体也要单独设限：服务端发完头后卡住会让队列永久阻塞
+      response = await http.Response.fromStream(streamed)
+          .timeout(const Duration(seconds: 60));
     } on TimeoutException {
-      throw AsrException('上传超时（弱网），可重试');
+      // close 会中止底层连接，避免超时后重试把同一段再并发发一份
+      client.close();
+      throw AsrException('上传/响应超时（弱网），可重试');
     } catch (e) {
+      client.close();
       throw AsrException('网络请求失败，请检查网络（$e）');
+    } finally {
+      client.close();
     }
-
-    final response = await http.Response.fromStream(streamed);
 
     if (response.statusCode == 401 || response.statusCode == 403) {
       throw AsrException('硅基流动 API Key 无效或未实名，请到设置里检查 Key',

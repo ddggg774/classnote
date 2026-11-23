@@ -281,11 +281,15 @@ class WikiExtractResult {
   final int conflicts;
   final int skipped;
 
+  /// 非空表示有需要告知用户的情况（如正文过长被截断）
+  final String note;
+
   const WikiExtractResult({
     this.created = 0,
     this.appendedSources = 0,
     this.conflicts = 0,
     this.skipped = 0,
+    this.note = '',
   });
 
   int get total => created + appendedSources + conflicts + skipped;
@@ -298,6 +302,7 @@ class WikiExtractResult {
     if (appendedSources > 0) parts.add('补充 $appendedSources 处出处');
     if (conflicts > 0) parts.add('$conflicts 处与已有定义不一致');
     if (skipped > 0) parts.add('跳过 $skipped 条');
+    if (note.isNotEmpty) parts.add(note);
     return parts.isEmpty ? '没有抽取到新内容' : parts.join('，');
   }
 }

@@ -36,8 +36,12 @@ class LocalEmbedder {
     if (clean.isEmpty) return vec;
 
     void add(String gram, double weight) {
-      final h = _hash(gram) % dim;
-      vec[h] += weight;
+      // 有符号哈希：不同 gram 撞进同一维时正负相消，
+      // 避免无关文本因碰撞累积出虚假相似度
+      final h = _hash(gram);
+      final idx = h % dim;
+      final sign = ((h >> 16) & 1) == 1 ? -1.0 : 1.0;
+      vec[idx] += weight * sign;
     }
 
     for (var i = 0; i < clean.length; i++) {
@@ -93,16 +97,35 @@ class EvidenceIndex {
   List<({VectorDoc doc, double score})> search(
     String query, {
     int k = 3,
-    double minScore = 0.12,
+    double minScore = 0.03,
   }) {
     if (docs.isEmpty || query.trim().isEmpty) return const [];
     final q = LocalEmbedder.embed(query);
     final scored = <({VectorDoc doc, double score})>[];
     for (var i = 0; i < docs.length; i++) {
       final s = LocalEmbedder.cosine(q, vectors[i]);
-      if (s >= minScore) scored.add((doc: docs[i], score: s));
+      // 低阈值 + 二字组守卫：碰撞出来的虚假相似度不再靠阈值兜，
+      // 而是要求两边确实共享至少一个二字组
+      if (s >= minScore && _sharesBigram(query, docs[i].text)) {
+        scored.add((doc: docs[i], score: s));
+      }
     }
     scored.sort((a, b) => b.score.compareTo(a.score));
     return scored.take(k).toList();
   }
+}
+
+bool _sharesBigram(String query, String doc) {
+  final a = query.replaceAll(RegExp(r'\s+'), '');
+  final b = doc.replaceAll(RegExp(r'\s+'), '');
+  if (a.isEmpty || b.isEmpty) return false;
+  if (a.length < 2) return b.contains(a);
+  final grams = <String>{};
+  for (var i = 0; i + 2 <= b.length; i++) {
+    grams.add(b.substring(i, i + 2));
+  }
+  for (var i = 0; i + 2 <= a.length; i++) {
+    if (grams.contains(a.substring(i, i + 2))) return true;
+  }
+  return false;
 }
