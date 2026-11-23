@@ -80,18 +80,42 @@ void main() {
   });
 
   group('排序', () {
-    test('命中高优先术语排最前，其次反复出现，再次候选唯一', () {
+    test('候选命中高优术语排最前，其次反复出现，再次候选唯一', () {
       final r = PendingBudget.trim(
         [
           item('常见词', candidates: ['a', 'b']),
-          item('木兰科', candidates: ['木兰棵']),
+          item('木兰棵', candidates: ['木兰科']),
           item('反复错', candidates: ['对'], count: 3),
           item('普通', candidates: ['普通2']),
         ],
         highPriorityTerms: {'木兰科'},
       );
       expect(r.all.map((e) => e.snippet).toList(),
-          ['木兰科', '反复错', '普通', '常见词']);
+          ['木兰棵', '反复错', '普通', '常见词']);
+    });
+
+    test('原文已经是正确写法、候选又不是高优术语的，不享受加分', () {
+      // 回归：之前是拿 snippet 去 contains(术语)，会把误报排到第一
+      final r = PendingBudget.trim(
+        [
+          item('木兰科', candidates: ['木兰颗']),
+          item('反复错', candidates: ['对'], count: 3),
+        ],
+        highPriorityTerms: {'木兰科'},
+      );
+      expect(r.all.first.snippet, '反复错');
+    });
+
+    test('误听形式命中高优术语的也加分', () {
+      final r = PendingBudget.trim(
+        [
+          item('心脾', candidates: ['心皮']),
+          item('普通错', candidates: ['普通对'], count: 2),
+        ],
+        highPriorityTerms: {'心皮'},
+        highPriorityMisheard: {'心脾'},
+      );
+      expect(r.all.first.snippet, '心脾');
     });
 
     test('同分时按出现位置排序', () {

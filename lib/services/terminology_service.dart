@@ -166,8 +166,8 @@ class TerminologyService {
     }
   }
 
-  /// 兜底规整：保证 high ≤ 15、总数 30–50、initial_prompt 不超长。
-  /// 模型不一定守规矩，与其信它不如在这里收口。
+  /// 兜底规整：high ≤15、mid ≤15、low ≤10（合计 ≤40），initial_prompt 不超长。
+  /// 模型不一定守规矩，与其信它不如在这里收口——术语表越大，纠错误报越多。
   TerminologyPack _normalize(TerminologyPack pack) {
     final high = <Term>[];
     final mid = <Term>[];
@@ -177,13 +177,12 @@ class TerminologyService {
         case TermLevel.high:
           if (high.length < 15) high.add(t);
         case TermLevel.mid:
-          mid.add(t);
+          if (mid.length < 15) mid.add(t);
         case TermLevel.low:
-          low.add(t);
+          if (low.length < 10) low.add(t);
       }
     }
-    // 总数封顶 50：优先保 high，再 mid，最后 low
-    final merged = <Term>[...high, ...mid, ...low].take(50).toList();
+    final merged = <Term>[...high, ...mid, ...low].take(40).toList();
 
     // initial_prompt 兜底：模型给了就用，没给就用 high 术语拼
     var prompt = pack.initialPrompt.trim();

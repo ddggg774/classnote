@@ -211,3 +211,32 @@ class PendingTrimResult {
 验证：`flutter analyze` 0 告警；`flutter test` **434 通过 + 29 跳过**（新增 12 例 `pending_budget_test`）。
 
 **没做到的**：本机没有 DeepSeek Key，跑不了真实课堂的基线对比（改前 pending 数 → 改后数）。这一项只能等真机/真 Key 实测，文档里不要把「≤5」当成已验证的结论。
+
+---
+
+## 五、自检修复（2026-11-23，v1.5.1）
+
+移动应用开发工程师做静态审计后报 13 个问题，已修：
+
+| 问题 | 修法 |
+|---|---|
+| **排序方向反了**：用 snippet 包含正确写法加分，把误报排第一、真误听挤出预算 | 改为「候选命中高优术语」或「snippet 命中误听形式」才加分；`PendingBudget` 增加 `highPriorityMisheard`，调用方从 `Term.misheardList` 传入；测试 fixture 一起纠正 |
+| **批量替换只改第一处却整条删除** | 出现多次（`positions.length>1` 或 `count>1`）时 `all: true` 全部替换 |
+| **批量后撤销不还原清单、不回写库** | `_undoCalibration` 改为异步，按 `_undoPendingSnapshot` 同时还原正文与 pending 并落库 |
+| 「全部忽略」没有恢复入口 | 清空前存快照，SnackBar 提供「撤销」并写回 |
+| suppressed 计数不落库，重进页面消失 | `StudySummary.suppressedCount`（缺省 0，兼容旧数据），随 pending 一起存；保存面板显示同一句文案 |
+| 术语表 15/15/10 只有提示词、程序没兜底 | `_normalize` 改为 high ≤15、mid ≤15、low ≤10、合计 ≤40 |
+| Agent 落库时把 count 丢成 1 | 重建 pending 时用 `positions.length` 回填 count |
+| 候选与原文相同也算「替换成功」并删条 | `PendingFixer.apply` 提前返回 `replaced: 0`，保留该项 |
+| 模型只给 pending、不给正文时整块被吞 | 空正文分支保留 hits / pending / missed / advice |
+| 排序同分依赖非稳定 sort | 加输入下标兜底 |
+| 批量与忽略并发写库 | 新增 `_pendingBusy` 闸门，两个按钮共用 |
+
+验证：`flutter analyze --no-pub` 0 告警；`flutter test --no-pub` **437 通过 + 29 跳过**。
+
+**仍未做（已知缺口，不是 bug 隐瞒）**：
+
+1. 报告区（刚校准完那一屏）还没有批量按钮——批量只在「已保存待确认」面板；要批量得先保存/离开再进。
+2. 被截断的条目只显示数量，不能展开看具体是哪几条（`PendingTrimResult.all` 目前只有内部使用）。
+3. 被过滤的噪音（单字/纯数字）不计入 suppressed，界面上确实看不到「模型还标过 3 处噪音」。
+4. 批量/撤销没有 widget 测试，靠人工验证；真机尚未实测。

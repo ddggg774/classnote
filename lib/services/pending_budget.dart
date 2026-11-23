@@ -48,9 +48,14 @@ class PendingBudget {
     List<PendingItem> items, {
     int max = defaultMax,
     Set<String> highPriorityTerms = const {},
+    Set<String> highPriorityMisheard = const {},
     int modelSuppressed = 0,
   }) {
     final high = highPriorityTerms
+        .map(normalize)
+        .where((t) => t.isNotEmpty)
+        .toSet();
+    final misheard = highPriorityMisheard
         .map(normalize)
         .where((t) => t.isNotEmpty)
         .toSet();
@@ -120,10 +125,18 @@ class PendingBudget {
     }
 
     // ④ 排序：命中高优术语 > 反复出现 > 候选唯一 > 其他；同分按出现位置
+    final order = <String, int>{
+      for (var i = 0; i < list.length; i++) _identity(list[i]): i,
+    };
     int score(PendingItem p) {
       final norm = normalize(p.snippet);
       var s = 0;
-      if (high.isNotEmpty && high.any((t) => norm.contains(t))) s += 3;
+      // 关键是「候选/误听形式命中了高优术语」，不是原文里已经写着正确写法。
+      // 原文已经是正确写法的那条，本来就是误报，不该排前面。
+      final candidateHitsTerm = p.candidates
+          .map(normalize)
+          .any((c) => c.isNotEmpty && high.contains(c));
+      if (candidateHitsTerm || misheard.contains(norm)) s += 3;
       if (p.count >= 2) s += 2;
       if (p.candidates.length == 1) s += 1;
       return s;
@@ -134,7 +147,9 @@ class PendingBudget {
       if (byScore != 0) return byScore;
       final px = x.positions.isEmpty ? 1 << 30 : x.positions.first;
       final py = y.positions.isEmpty ? 1 << 30 : y.positions.first;
-      return px.compareTo(py);
+      if (px != py) return px.compareTo(py);
+      // 稳定兜底：分数与位置都一样时保持输入顺序
+      return (order[_identity(x)] ?? 0).compareTo(order[_identity(y)] ?? 0);
     });
 
     // ⑤ 截断
@@ -145,6 +160,9 @@ class PendingBudget {
 
     return PendingTrimResult(kept: kept, all: list, suppressed: suppressed);
   }
+
+  static String _identity(PendingItem p) =>
+      '${p.snippet}|${p.candidates.join('/')}|${p.count}';
 
   /// 归一化：小写、去空白、去标点，用于比较「是不是同一个错误」
   static String normalize(String s) {

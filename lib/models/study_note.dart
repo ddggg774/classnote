@@ -39,6 +39,10 @@ class StudySummary {
   /// 考点清单、复习题这类不进 detailMarkdown，避免污染"详细笔记"的语义。
   final Map<String, String> extras;
 
+  /// 上次纠错因「待确认预算」压掉的条数（老数据缺省 0）。
+  /// 存在这里，重进详情页才能继续显示「另有 N 处」。
+  final int suppressedCount;
+
   const StudySummary({
     required this.detailMarkdown,
     required this.mindMap,
@@ -46,6 +50,7 @@ class StudySummary {
     this.chunked = false,
     this.pending = const [],
     this.extras = const {},
+    this.suppressedCount = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -57,6 +62,7 @@ class StudySummary {
         if (pending.isNotEmpty)
           'pending': pending.map<Map<String, dynamic>>((p) => p.toJson()).toList(),
         if (extras.isNotEmpty) 'extras': extras,
+        if (suppressedCount > 0) 'suppressedCount': suppressedCount,
       };
 
   factory StudySummary.fromJson(Map<String, dynamic> json) {
@@ -88,6 +94,7 @@ class StudySummary {
             (k, v) => MapEntry(k.toString(), v?.toString() ?? ''),
           ) ??
           const {},
+      suppressedCount: (json['suppressedCount'] as num?)?.toInt() ?? 0,
     );
   }
 

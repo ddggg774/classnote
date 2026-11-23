@@ -590,7 +590,18 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
       annotatedText: '',
       pending: items,
     ).withLocations(source);
-    return located.pending;
+    // 落库前把 count 补成真实出现次数：Agent 传过来的是纯文本，没有 count，
+    // 不补的话界面永远显示「出现 1 次」，用户会以为只错了一处。
+    return located.pending.map((p) {
+      final count = p.positions.length > p.count ? p.positions.length : p.count;
+      return PendingItem(
+        snippet: p.snippet,
+        candidates: p.candidates,
+        count: count,
+        timestamp: p.timestamp,
+        positions: p.positions,
+      );
+    }).toList();
   }
 
   /// 把 3-5 级 graph 压成两层 MindMapData（给旧的「大纲」Tab 与 PNG 导出）

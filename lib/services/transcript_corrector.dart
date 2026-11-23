@@ -166,14 +166,21 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
     if (trimmed.length <= chunkChars) {
       final r = await _calibrateChunk(
           apiKey, trimmed, termBlock, promptBlock, systemPrompt);
+      final highTerms = pack?.terms
+              .where((t) => t.level == TermLevel.high)
+              .map((t) => t.term)
+              .toSet() ??
+          const <String>{};
+      final highMisheard = pack?.terms
+              .where((t) => t.level == TermLevel.high)
+              .expand((t) => t.misheardList)
+              .toSet() ??
+          const <String>{};
       final budget = PendingBudget.trim(
         r.pending,
         max: PendingBudget.defaultMax,
-        highPriorityTerms: pack?.terms
-                .where((t) => t.level == TermLevel.high)
-                .map((t) => t.term)
-                .toSet() ??
-            const {},
+        highPriorityTerms: highTerms,
+        highPriorityMisheard: highMisheard,
         modelSuppressed: r.suppressedCount,
       );
       return CalibrationReport(
@@ -214,15 +221,22 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
     final mergedPending = _mergePending(allPending);
 
     // 预算收口：过滤噪音、合并同义、排序、截断到 5 条
+    final highTerms = pack?.terms
+            .where((t) => t.level == TermLevel.high)
+            .map((t) => t.term)
+            .toSet() ??
+        const <String>{};
+    final highMisheard = pack?.terms
+            .where((t) => t.level == TermLevel.high)
+            .expand((t) => t.misheardList)
+            .toSet() ??
+        const <String>{};
     final budget = PendingBudget.trim(
       mergedPending,
       max: PendingBudget.defaultMax,
-      highPriorityTerms: pack?.terms
-              .where((t) => t.level == TermLevel.high)
-              .map((t) => t.term)
-              .toSet() ??
-          const {},
-      // 短文本路径没有累加模型自报，这里只加程序截断
+      highPriorityTerms: highTerms,
+      highPriorityMisheard: highMisheard,
+      // 各块模型自报的截断数已累加，这里连同程序截断一起记
       modelSuppressed: modelSuppressed,
     );
 
@@ -287,14 +301,9 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
       final content = body['choices'][0]['message']['content'] as String;
       final d = jsonDecode(content) as Map<String, dynamic>;
 
-      // 关键防线：模型没给正文时保留原文，绝不返回空
+      // 关键防线：模型没给正文时保留原文，绝不返回空。
+      // 注意：pending / hits 仍然要解析——不能因为正文空就把待确认也吞掉。
       final annotated = (d['annotatedText'] as String?)?.trim() ?? '';
-      if (annotated.isEmpty) {
-        return CalibrationReport(
-          annotatedText: chunk,
-          usability: '模型未返回正文，已保留原文未改动',
-        );
-      }
 
       final hits = ((d['hits'] as List?) ?? [])
           .whereType<Map<String, dynamic>>()
@@ -335,6 +344,18 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
 
       final usability = (d['usability'] as String?)?.trim() ?? '';
       final suppressed = (d['suppressedCount'] as num?)?.toInt() ?? 0;
+
+      if (annotated.isEmpty) {
+        return CalibrationReport(
+          annotatedText: chunk,
+          hits: hits,
+          missedTerms: missed,
+          pending: pending,
+          micAdvice: advice,
+          usability: '模型未返回正文，已保留原文未改动',
+          suppressedCount: suppressed < 0 ? 0 : suppressed,
+        );
+      }
 
       return CalibrationReport(
         annotatedText: annotated,

@@ -313,14 +313,22 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
     final result = await loop.run(task.toString());
 
     // 预算收口：过滤噪音、合并同义、排序、截断到 5 条
+    final pack = session.pack;
+    final highTerms = pack?.terms
+            .where((t) => t.level == TermLevel.high)
+            .map((t) => t.term)
+            .toSet() ??
+        const <String>{};
+    final highMisheard = pack?.terms
+            .where((t) => t.level == TermLevel.high)
+            .expand((t) => t.misheardList)
+            .toSet() ??
+        const <String>{};
     final trimmed = PendingBudget.trim(
       session.pending,
       max: PendingBudget.defaultMax,
-      highPriorityTerms: session.pack?.terms
-              .where((t) => t.level == TermLevel.high)
-              .map((t) => t.term)
-              .toSet() ??
-          const {},
+      highPriorityTerms: highTerms,
+      highPriorityMisheard: highMisheard,
     );
 
     return CorrectionAgentResult(

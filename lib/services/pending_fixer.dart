@@ -50,6 +50,14 @@ class PendingFixer {
     if (snippet.isEmpty || replacement.trim().isEmpty || text.isEmpty) {
       return FixResult(text: text, replaced: 0, remainingPending: const []);
     }
+    // 候选和原文一样：这不是一次修改，不能算「替换成功」并把清单删掉
+    if (replacement.trim() == snippet) {
+      return FixResult(
+        text: text,
+        replaced: 0,
+        remainingPending: _relocate(text, item, keep: true),
+      );
+    }
 
     // 新文本用 StringBuffer 拼，避免多次 substring 产生大量中间串
     final buffer = StringBuffer();

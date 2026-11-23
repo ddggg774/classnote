@@ -94,6 +94,15 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   bool _showAllReportPending = false;
   bool _showAllSavedPending = false;
 
+  /// 上次落库时被预算压掉的条数（来自 summaryJson）
+  int _savedSuppressed = 0;
+
+  /// 批量替换前保存的待确认快照；撤销时要连清单一起还原
+  List<PendingItem>? _undoPendingSnapshot;
+
+  /// 批量操作进行中：防止「替换」与「忽略」并发写库
+  bool _pendingBusy = false;
+
   /// 额外技能产出（考点清单 / 复习题）
   Map<String, String> _extras = const {};
   /// 校准前的原文，用于撤销
@@ -167,6 +176,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _terms = TerminologyPack.tryDecode(note.terminologyJson);
       _detailMarkdown = parsed?.detailMarkdown ?? '';
       _savedPending = parsed?.pending ?? const [];
+      _savedSuppressed = parsed?.suppressedCount ?? 0;
       _extras = parsed?.extras ?? const {};
       // 模板：存过就按存的来，没存过按课程推荐
       final savedTpl = note.templateId;
@@ -937,6 +947,14 @@ class _NoteDetailPageState extends State<NoteDetailPage>
             '点一下可跳到原文对应位置回听',
             style: TextStyle(fontSize: 11, color: Colors.orange.shade700),
           ),
+          if (_savedSuppressed > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                '另有 $_savedSuppressed 处低置信，未逐条列出',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+              ),
+            ),
           Row(
             children: [
               TextButton(
@@ -1204,6 +1222,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               graph: parsed.graph,
               chunked: parsed.chunked,
               pending: remaining,
+              // 预算计数跟着列表一起存，重进页面才不会「另有 N 处」消失
+              suppressedCount:
+                  _report?.suppressedCount ?? parsed.suppressedCount,
             ).encode(),
     );
     await _db.update(updated);
@@ -1241,6 +1262,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         graph: parsed.graph,
         chunked: parsed.chunked,
         pending: const [],
+        suppressedCount: parsed.suppressedCount,
       ).encode(),
     );
     await _db.update(updated);
@@ -1255,6 +1277,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 批量：把所有带候选的待确认项按「首选候选」替换。
   /// 逐条替换、每条都重算位置；替换前给一次确认，替换后仍可撤销。
   Future<void> _applyAllSavedFirstChoice() async {
+    if (_pendingBusy) return;
     final targets =
         _savedPending.where((p) => p.candidates.isNotEmpty).toList();
     if (targets.isEmpty) {
@@ -1267,7 +1290,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         title: const Text('按首选候选批量替换'),
         content: Text(
           '将把 ${targets.length} 处待确认按各自的首选候选替换，'
-          '替换后仍可撤销。\n\n建议先展开看一眼，确认这些首选都靠谱。',
+          '多次出现的会全部替换；替换后仍可撤销。',
         ),
         actions: [
           TextButton(
@@ -1283,41 +1306,53 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     );
     if (ok != true || !mounted) return;
 
-    final original = _transcriptController.text;
-    var text = original;
-    var remaining = List<PendingItem>.from(_savedPending);
-    var replacedTotal = 0;
+    setState(() => _pendingBusy = true);
+    try {
+      final original = _transcriptController.text;
+      final snapshot = List<PendingItem>.from(_savedPending);
+      var text = original;
+      var remaining = List<PendingItem>.from(_savedPending);
+      var replacedTotal = 0;
 
-    for (final item in targets) {
-      final result =
-          PendingFixer.apply(text, item, item.candidates.first);
-      if (!result.changed) continue;
-      text = result.text;
-      replacedTotal += result.replaced;
-      remaining = remaining
-          .where((p) =>
-              !(p.snippet == item.snippet &&
-                  p.candidates.join('/') == item.candidates.join('/')))
-          .toList();
-      remaining = PendingFixer.relocateAll(text, remaining);
+      for (final item in targets) {
+        // 同一片段出现多次时整条替换掉，否则删了清单还会剩下没改的旧写法
+        final all = item.positions.length > 1 || item.count > 1;
+        final result =
+            PendingFixer.apply(text, item, item.candidates.first, all: all);
+        if (!result.changed) continue;
+        text = result.text;
+        replacedTotal += result.replaced;
+        remaining = remaining
+            .where((p) =>
+                !(p.snippet == item.snippet &&
+                    p.candidates.join('/') == item.candidates.join('/')))
+            .toList();
+        remaining = PendingFixer.relocateAll(text, remaining);
+      }
+
+      if (replacedTotal == 0) {
+        _showSnack('没有替换成功，原文可能已被改动');
+        return;
+      }
+
+      setState(() {
+        _undoTranscript = original;
+        _undoPendingSnapshot = snapshot;
+      });
+      _transcriptController.text = text;
+      await _persistPendingChange(text, remaining);
+      if (!mounted) return;
+      setState(() => _savedPending = remaining);
+      _showSnack('已批量替换 $replacedTotal 处');
+    } finally {
+      if (mounted) setState(() => _pendingBusy = false);
     }
-
-    if (replacedTotal == 0) {
-      _showSnack('没有替换成功，原文可能已被改动');
-      return;
-    }
-
-    setState(() => _undoTranscript = original);
-    _transcriptController.text = text;
-    await _persistPendingChange(text, remaining);
-    if (!mounted) return;
-    setState(() => _savedPending = remaining);
-    _showSnack('已批量替换 $replacedTotal 处');
   }
 
-  /// 批量忽略：只清清单，不改正文。先确认，避免手滑。
+  /// 批量忽略：只清清单，不改正文。先确认，SnackBar 里可撤销。
   Future<void> _ignoreAllSaved() async {
-    if (_savedPending.isEmpty) return;
+    if (_pendingBusy || _savedPending.isEmpty) return;
+    final snapshot = List<PendingItem>.from(_savedPending);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1336,7 +1371,27 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       ),
     );
     if (ok != true || !mounted) return;
-    await _clearSavedPending();
+    setState(() => _pendingBusy = true);
+    try {
+      await _clearSavedPending();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('已全部忽略，正文未改动'),
+          action: SnackBarAction(
+            label: '撤销',
+            onPressed: () async {
+              await _persistPendingChange(
+                  _transcriptController.text, snapshot);
+              if (!mounted) return;
+              setState(() => _savedPending = snapshot);
+            },
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _pendingBusy = false);
+    }
   }
 
   Widget _buildReportPanel(CalibrationReport report) {
@@ -1754,15 +1809,28 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         : '已定位「${item.snippet}」，请回听这段录音核对');
   }
 
-  void _undoCalibration() {
+  Future<void> _undoCalibration() async {
     final original = _undoTranscript;
     if (original == null) return;
-    setState(() {
-      _transcriptController.text = original;
-      _undoTranscript = null;
-      _report = null;
-    });
-    _showSnack('已撤销校准');
+    final snapshot = _undoPendingSnapshot;
+    _transcriptController.text = original;
+    if (snapshot != null) {
+      // 批量替换过：正文与待确认清单都要回到替换前，并重新落库
+      await _persistPendingChange(original, snapshot);
+      if (!mounted) return;
+      setState(() {
+        _savedPending = snapshot;
+        _undoTranscript = null;
+        _undoPendingSnapshot = null;
+        _report = null;
+      });
+    } else {
+      setState(() {
+        _undoTranscript = null;
+        _report = null;
+      });
+    }
+    _showSnack('已撤销');
   }
 
   /// 点画布节点时弹一个小面板显示正文（不跳走，保持画布位置）

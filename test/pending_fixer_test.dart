@@ -165,4 +165,13 @@ void main() {
       expect(r.text.substring(pos, pos + '雄瑞群'.length), '雄瑞群');
     });
   });
+
+  test('候选与原文相同：不算替换，也不删待确认', () {
+    const text = '心皮是离生心皮。';
+    const item = PendingItem(snippet: '心皮', candidates: ['心皮']);
+    final r = PendingFixer.apply(text, item, '心皮');
+    expect(r.changed, isFalse);
+    expect(r.text, text);
+    expect(r.remainingPending.length, 1);
+  });
 }
