@@ -145,4 +145,41 @@ void main() {
       expect(AcademicReview.tryDecode(''), isNull);
     });
   });
+
+  group('单句复核', () {
+    test('整段判错但单句复核说没错 → 丢掉这条误报', () async {
+      final svc = AcademicReviewService(ai: (system, user) async {
+        if (system.contains('路由器')) {
+          return '{"subject_code":"botany","confidence":0.9,"reason":"植物"}';
+        }
+        if (system.contains('审稿专家')) {
+          if (system.contains('【待审句子】：球茎（如荸荠）')) {
+            return '{"original_sentence":"球茎（如荸荠）有明显的节和节间。","has_error":false,"evidence":"经核实无误","correction":"","review_advice":""}';
+          }
+          return '{"original_sentence":"芋头是块茎","has_error":true,"error_level":"fatal_error","error_category":"分类归属错误","evidence":"芋头是球茎","correction":"芋头是球茎","review_advice":"带茎字的是茎变态"}';
+        }
+        return '{"agent_name":"植物学质检官","summary":"2 处硬伤","hard_errors":[{"id":1,"original_text":"芋头是块茎","reason":"错","suggestion":"球茎"},{"id":2,"original_text":"球茎（如荸荠）有明显的节和节间。","reason":"错","suggestion":"根状茎"}],"logic_flaws":[],"term_corrections":[],"review_advice":""}';
+      });
+      final r = await svc.reviewWithVerification('芋头是块茎。球茎（如荸荠）有明显的节和节间。');
+      expect(r.hardErrors.length, 1);
+      expect(r.hardErrors.single.originalText, '芋头是块茎');
+      expect(r.hardErrors.single.verified, isTrue);
+      expect(r.hardErrors.single.suggestion, '芋头是球茎');
+    });
+
+    test('复核调用失败时保留原判定并标记未核实', () async {
+      var verifyCalls = 0;
+      final svc = AcademicReviewService(ai: (system, user) async {
+        if (system.contains('审稿专家')) {
+          verifyCalls++;
+          throw Exception('网络炸了');
+        }
+        return '{"agent_name":"x","summary":"1","hard_errors":[{"id":1,"original_text":"甲句","reason":"r","suggestion":"s"}],"logic_flaws":[],"term_corrections":[],"review_advice":""}';
+      });
+      final r = await svc.reviewWithVerification('甲句', subject: SubjectCode.general);
+      expect(verifyCalls, 1);
+      expect(r.hardErrors.length, 1);
+      expect(r.hardErrors.single.verified, isFalse);
+    });
+  });
 }

@@ -54,7 +54,7 @@ void main() {
       'reason': route.reason,
     })}');
 
-    final review = await svc.review(
+    final review = await svc.reviewWithVerification(
       sampleBirdNote,
       subject: route.subject,
       course: '植物学',
@@ -70,6 +70,8 @@ void main() {
                 'type': e.errorType,
                 'original': e.originalText,
                 'suggestion': e.suggestion,
+                'verified': e.verified,
+                'evidence': e.evidence,
               })
           .toList(),
       'logicFlaws': review.logicFlaws
@@ -83,9 +85,15 @@ void main() {
 
     expect(review.summary, isNotEmpty);
     expect(review.subject, SubjectCode.botany);
-    // 至少抓到「芋头是块茎/叶的变态」或「佛焰苞」这类硬伤
-    expect(review.hardErrors.isNotEmpty, isTrue,
-        reason: '样例里埋了 4 个硬伤，一个都没抓到说明领域规则没生效');
+    // 单句复核后：埋的 4 个硬伤至少要留下 3 个
+    expect(review.hardErrors.length >= 3, isTrue,
+        reason: '样例里埋了 4 个硬伤，复核后剩下不到 3 个说明二审杀过头了');
+    // 回归：这句本身正确，单句复核应把它挡掉
+    expect(
+      review.hardErrors.any((e) => e.originalText.contains('球茎（如荸荠）')),
+      isFalse,
+      reason: '「球茎（如荸荠）有明显的节和节间」是对的，不该出现在硬伤里',
+    );
     // 每条硬伤都能回到原文
     for (final e in review.hardErrors) {
       expect(e.originalText.trim(), isNotEmpty);

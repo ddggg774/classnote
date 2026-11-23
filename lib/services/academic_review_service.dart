@@ -143,6 +143,55 @@ class AcademicReviewService {
   "review_advice": "基于以上错误，给出 1-2 条高效的对比记忆建议或复习策略"
 }''';
 
+  /// 单句复核模板：只对这一句负责，宁可漏报不许误报。
+  /// 这是对整段质检的「二审」——整段模型容易把上一句的错误前提带进下一句。
+  static const String sentenceTemplate = '''
+# Role
+你是一位极其严谨、只认证据的{{SUBJECT_NAME}}审稿专家。你的任务是审阅单条课堂笔记，判断其是否存在知识性硬伤。
+
+# Crucial Rules (核心纪律，必须严格遵守)
+1. **上下文隔离**：你当前只需要且只能对【待审句子】负责。不管前一秒看了什么错误概念，绝不能把上一句的错误前提代入到当前句子中进行推断。
+2. **证据驱动**：如果没有 100% 的把握，或者无法在你的知识库中检索到确切依据，**严禁凭空臆断**。宁可不报错，也绝不能误报。
+3. **区分概念**：严格区分各类易混概念与形态学特征。
+
+# Subject Domain Rules（领域排雷规则）
+{{DOMAIN_RULES}}
+
+# Input
+- 【待审句子】：{{CURRENT_SENTENCE}}
+- 【可参考的教材片段（可选）】：{{RAG_EVIDENCE}}
+
+# Task
+请执行以下两步推理，并最终输出严格的 JSON 格式：
+1. 提取【待审句子】中的核心专业概念。
+2. 结合教材片段或绝对确信的专业知识，判断该句子是否成立。
+
+# Output Format (严格输出 JSON，禁止使用 markdown 代码块包裹)
+{
+  "original_sentence": "回显待审句子",
+  "has_error": false,
+  "error_level": null,
+  "error_category": null,
+  "evidence": "该句的确切定义，或引用教材原话。如果 has_error 为 false，这里写「经核实无误」。",
+  "correction": "如果 has_error 为 true，给出修改后的正确表述；如果为 false，留空。",
+  "review_advice": "针对该考点的简短避坑记忆法（仅当 has_error 为 true 时生成）"
+}
+
+{{EXAMPLES}}
+''';
+
+  /// 植物学的两个锚点示例（其它学科不硬塞，避免示例本身带偏）
+  static const String botanyExamples = '''
+# Examples
+【输入】待审句子：球茎（如荸荠）有明显的节和节间。
+【输出】
+{"original_sentence":"球茎（如荸荠）有明显的节和节间。","has_error":false,"error_level":null,"error_category":null,"evidence":"经核实无误，地下变态茎（球茎、根状茎）的本质特征就是具有节和节间。","correction":"","review_advice":""}
+
+【输入】待审句子：芋头是典型的块茎，属于叶的变态。
+【输出】
+{"original_sentence":"芋头是典型的块茎，属于叶的变态。","has_error":true,"error_level":"fatal_error","error_category":"分类归属错误","evidence":"植物学中，芋头属于地下变态茎中的球茎，具环状节和退化叶；所有地下变态茎均属于茎的变态，不属于叶的变态。","correction":"芋头是典型的球茎，属于茎的变态。","review_advice":"带「茎」字的（根状茎、块茎、鳞茎、球茎）都是茎变态；叶变态重点是卷须、刺、捕虫叶。"}
+''';
+
   // ───────────────── 对外 API ─────────────────
 
   /// 路由：判断这段笔记该交给哪个专家。解析失败/未知学科一律按 general。
@@ -179,6 +228,105 @@ class AcademicReviewService {
       return const SubjectRoute(
           subject: SubjectCode.general, reason: '路由失败，按通用规则质检');
     }
+  }
+
+  /// 单句复核：只判这一句，按证据说话。
+  ///
+  /// [ragEvidence] 是教材原文片段（暂未接入 RAG 时留空），
+  /// 留空时模型只能依赖自身知识，此时它被要求「没把握就不报」。
+  Future<SentenceVerdict> verifySentence(
+    String sentence, {
+    SubjectCode subject = SubjectCode.general,
+    String ragEvidence = '',
+  }) async {
+    final s = sentence.trim();
+    if (s.isEmpty) {
+      return const SentenceVerdict(originalSentence: '', hasError: false);
+    }
+    final spec = subjects[subject]!;
+    final prompt = sentenceTemplate
+        .replaceAll('{{SUBJECT_NAME}}', spec.name)
+        .replaceAll('{{DOMAIN_RULES}}', spec.rules)
+        .replaceAll('{{CURRENT_SENTENCE}}', s)
+        .replaceAll('{{RAG_EVIDENCE}}', ragEvidence.trim())
+        .replaceAll('{{EXAMPLES}}',
+            subject == SubjectCode.botany ? botanyExamples : '');
+
+    final raw = await _chat(prompt, '请审阅并输出 JSON。', maxTokens: 800);
+    final json = _jsonObject(raw);
+    final v = SentenceVerdict.fromJson(json);
+    return SentenceVerdict(
+      originalSentence:
+          v.originalSentence.trim().isEmpty ? s : v.originalSentence,
+      hasError: v.hasError,
+      errorLevel: v.errorLevel?.isEmpty == true ? null : v.errorLevel,
+      errorCategory: v.errorCategory?.isEmpty == true ? null : v.errorCategory,
+      evidence: v.evidence,
+      correction: v.correction,
+      reviewAdvice: v.reviewAdvice,
+    );
+  }
+
+  /// 整段质检 + 逐条单句复核。
+  ///
+  /// 为什么要有二审：整段模型会把上一句的错误前提带进下一句，
+  /// 实测「球茎（如荸荠）有明显的节和节间」被两次误判。
+  /// 这里对每条硬伤单独复核，只留下复核确认的；复核失败的保留但标记未核实。
+  Future<AcademicReview> reviewWithVerification(
+    String noteText, {
+    SubjectCode? subject,
+    String course = '',
+  }) async {
+    final base = await review(noteText, subject: subject, course: course);
+    final kept = <AcademicHardError>[];
+    var nextId = 1;
+
+    for (final e in base.hardErrors) {
+      var confirmed = true;
+      var evidence = '';
+      var correction = e.suggestion;
+      try {
+        final v = await verifySentence(
+          e.originalText,
+          subject: base.subject,
+        );
+        confirmed = v.hasError;
+        evidence = v.evidence;
+        if (v.correction.trim().isNotEmpty) correction = v.correction;
+      } catch (_) {
+        // 复核本身失败：不放大也不缩小，保留原判定但标记未核实
+        confirmed = true;
+      }
+      if (!confirmed) continue;
+      kept.add(AcademicHardError(
+        id: nextId++,
+        errorType: e.errorType,
+        originalText: e.originalText,
+        reason: e.reason,
+        suggestion: correction,
+        evidence: evidence,
+        verified: evidence.trim().isNotEmpty,
+      ));
+    }
+
+    // 复核会砍掉误报，summary 必须跟着改，否则会出现「说 5 处、只列 4 条」
+    final summary = kept.length == base.hardErrors.length
+        ? base.summary
+        : '复核后保留 ${kept.length} 处硬伤、'
+            '${base.logicFlaws.length} 处表述不严谨、'
+            '${base.termCorrections.length} 处术语需正名'
+            '（初审 ${base.hardErrors.length} 处，已剔除单句复核不成立的误报）';
+
+    return AcademicReview(
+      agentName: base.agentName,
+      subject: base.subject,
+      summary: summary,
+      hardErrors: kept,
+      logicFlaws: base.logicFlaws,
+      termCorrections: base.termCorrections,
+      reviewAdvice: base.reviewAdvice,
+      createdAt: base.createdAt,
+    );
   }
 
   /// 学科质检。subject 为空时先路由。

@@ -53,13 +53,61 @@ class AcademicHardError {
   final String reason;
   final String suggestion;
 
+  /// 单句复核给出的依据（教材定义或专业知识），空串表示没走复核
+  final String evidence;
+
+  /// 是否经过单句复核确认（false 表示只有整段模型的判断）
+  final bool verified;
+
   const AcademicHardError({
     required this.id,
     this.errorType = '',
     required this.originalText,
     this.reason = '',
     this.suggestion = '',
+    this.evidence = '',
+    this.verified = false,
   });
+}
+
+/// 单句复核结果：一句一句判，严格按证据
+class SentenceVerdict {
+  final String originalSentence;
+  final bool hasError;
+
+  /// fatal_error / warning（无错时 null）
+  final String? errorLevel;
+
+  /// 分类归属错误 / 机制理解错误 / 概念混淆 / 术语口语化
+  final String? errorCategory;
+  final String evidence;
+  final String correction;
+  final String reviewAdvice;
+
+  const SentenceVerdict({
+    required this.originalSentence,
+    required this.hasError,
+    this.errorLevel,
+    this.errorCategory,
+    this.evidence = '',
+    this.correction = '',
+    this.reviewAdvice = '',
+  });
+
+  factory SentenceVerdict.fromJson(Map<String, dynamic> json) {
+    Object? pick(String camel, String snake) => json[camel] ?? json[snake];
+    final rawError = pick('hasError', 'has_error');
+    return SentenceVerdict(
+      originalSentence:
+          (pick('originalSentence', 'original_sentence') ?? '').toString(),
+      hasError: rawError == true || rawError?.toString() == 'true',
+      errorLevel: (pick('errorLevel', 'error_level') ?? '').toString(),
+      errorCategory: (pick('errorCategory', 'error_category') ?? '').toString(),
+      evidence: (pick('evidence', '') ?? '').toString(),
+      correction: (pick('correction', '') ?? '').toString(),
+      reviewAdvice: (pick('reviewAdvice', 'review_advice') ?? '').toString(),
+    );
+  }
 }
 
 /// 逻辑不严谨：不一定是错的，但会丢分或产生误解
@@ -126,6 +174,8 @@ class AcademicReview {
                   'originalText': e.originalText,
                   'reason': e.reason,
                   'suggestion': e.suggestion,
+                  'evidence': e.evidence,
+                  'verified': e.verified,
                 })
             .toList(),
         'logicFlaws': logicFlaws
@@ -172,6 +222,8 @@ class AcademicReview {
                     (m['originalText'] ?? m['original_text'] ?? '').toString(),
                 reason: (m['reason'] ?? '').toString(),
                 suggestion: (m['suggestion'] ?? '').toString(),
+                evidence: (m['evidence'] ?? '').toString(),
+                verified: m['verified'] == true,
               ))
           .toList(),
       logicFlaws: list('logicFlaws', 'logic_flaws')

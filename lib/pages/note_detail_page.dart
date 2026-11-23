@@ -1585,7 +1585,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     setState(() => _reviewing = true);
     try {
       final route = await _academicReviewer.route(source);
-      final review = await _academicReviewer.review(
+      // 整段质检 + 逐条单句复核：二审只留被证据确认的硬伤
+      final review = await _academicReviewer.reviewWithVerification(
         source,
         subject: route.subject,
         course: _note?.course ?? '',
@@ -1654,6 +1655,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                       if (e.errorType.isNotEmpty) '类型：${e.errorType}',
                       if (e.reason.isNotEmpty) '为什么错：${e.reason}',
                       if (e.suggestion.isNotEmpty) '建议改成：${e.suggestion}',
+                      if (e.evidence.isNotEmpty) '依据：${e.evidence}',
+                      if (!e.verified) '⚠ 未经单句复核（复核调用失败）',
                     ],
                     color: Colors.red.shade50,
                     border: Colors.red.shade200,
