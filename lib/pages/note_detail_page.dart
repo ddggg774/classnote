@@ -106,6 +106,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   final AcademicReviewService _academicReviewer = AcademicReviewService();
   AcademicReview? _academicReview;
   bool _reviewing = false;
+  String _reviewProgress = '';
 
   /// 批量替换前保存的待确认快照；撤销时要连清单一起还原
   List<PendingItem>? _undoPendingSnapshot;
@@ -780,6 +781,23 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     final review = _academicReview;
     return Column(
       children: [
+        if (_reviewing)
+          Column(
+            children: [
+              const LinearProgressIndicator(minHeight: 3),
+              Container(
+                width: double.infinity,
+                color: Colors.indigo.shade50,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Text(
+                  _reviewProgress.isEmpty ? '学科质检中…' : '学科质检中：$_reviewProgress',
+                  style: TextStyle(
+                      fontSize: 12, color: Colors.indigo.shade900),
+                ),
+              ),
+            ],
+          ),
         if (review != null)
           InkWell(
             onTap: () => _showAcademicReviewSheet(review),
@@ -1602,7 +1620,12 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     } catch (e) {
       _showSnack(e.toString().replaceFirst('Exception: ', ''));
     } finally {
-      if (mounted) setState(() => _reviewing = false);
+      if (mounted) {
+        setState(() {
+          _reviewing = false;
+          _reviewProgress = '';
+        });
+      }
     }
   }
 

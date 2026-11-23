@@ -99,4 +99,25 @@ void main() {
       expect(e.originalText.trim(), isNotEmpty);
     }
   }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test('真实链路：逐句全审（每句单独判）', () async {
+    final svc = AcademicReviewService(apiKeyOverride: key);
+    final review = await svc.reviewAllSentences(sampleBirdNote, course: '植物学');
+    // ignore: avoid_print
+    print('ALL ${jsonEncode({
+      'summary': review.summary,
+      'hard': review.hardErrors
+          .map((e) => {'original': e.originalText, 'type': e.errorType})
+          .toList(),
+      'flaws': review.logicFlaws.map((e) => e.originalText).toList(),
+    }, toEncodable: (o) => o.toString())}');
+
+    expect(review.summary, contains('逐句审阅'));
+    expect(review.hardErrors.length >= 3, isTrue);
+    expect(
+      review.hardErrors.any((e) => e.originalText.contains('球茎（如荸荠）')),
+      isFalse,
+      reason: '正确句子不该被判硬伤',
+    );
+  }, timeout: const Timeout(Duration(minutes: 6)));
 }

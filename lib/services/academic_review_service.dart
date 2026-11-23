@@ -230,6 +230,122 @@ class AcademicReviewService {
     }
   }
 
+  /// 把笔记切成句子：按中文句末标点与换行切，跳过标题行与过短片段。
+  /// 标题（「一、地下变态茎」「二、地上变态茎」）不是知识点，送进去只会浪费调用。
+  static List<String> splitSentences(String text) {
+    final out = <String>[];
+    final normalized = text.replaceAll('\r', '');
+    for (final block in normalized.split(RegExp(r'[\n]+'))) {
+      final line = block.trim();
+      if (line.isEmpty) continue;
+      // 标题行：序号开头，或冒号结尾且没有句号
+      if (RegExp(r'^[一二三四五六七八九十]+[、.．]').hasMatch(line)) continue;
+      if (line.endsWith('：') || line.endsWith(':')) continue;
+      final pieces = line.split(RegExp(r'(?<=[。！？!?；;])'));
+      for (final raw in pieces) {
+        final s = raw.trim();
+        if (s.length < 8) continue;
+        out.add(s);
+      }
+    }
+    return out;
+  }
+
+  /// 逐句全审：每一句都单独判，不看上下文。
+  ///
+  /// 与 reviewWithVerification 的区别：
+  ///   · 那个是「整段找候选 + 复核少数几条」，便宜但有漏报可能；
+  ///   · 这个是「每句都判」，慢、贵，但漏报最少。
+  /// 两句以上并发 4 路，60 句约 20 秒。
+  Future<AcademicReview> reviewAllSentences(
+    String noteText, {
+    SubjectCode? subject,
+    String course = '',
+    int maxSentences = 60,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final text = noteText.trim();
+    if (text.isEmpty) throw Exception('笔记正文为空，无法质检');
+
+    final chosen = subject ?? (await route(text)).subject;
+    final all = splitSentences(text);
+    if (all.isEmpty) throw Exception('没有可审阅的完整句子');
+    final limited = all.take(maxSentences).toList();
+    final skipped = all.length - limited.length;
+
+    final verdicts = List<SentenceVerdict?>.filled(limited.length, null);
+    var cursor = 0;
+    var done = 0;
+    var failed = 0;
+
+    Future<void> worker() async {
+      while (true) {
+        final i = cursor++;
+        if (i >= limited.length) return;
+        try {
+          verdicts[i] = await verifySentence(limited[i], subject: chosen);
+        } catch (_) {
+          failed++;
+        }
+        done++;
+        onProgress?.call(done, limited.length);
+      }
+    }
+
+    await Future.wait(List.generate(4, (_) => worker()));
+
+    final hard = <AcademicHardError>[];
+    final flaws = <AcademicLogicFlaw>[];
+    var hi = 1;
+    var fi = 1;
+    for (final v in verdicts) {
+      if (v == null || !v.hasError) continue;
+      final evidence = v.evidence.trim();
+      final correction = v.correction.trim();
+      final category = (v.errorCategory ?? '').trim().isEmpty
+          ? '知识性问题'
+          : v.errorCategory!.trim();
+      if (v.errorLevel == 'fatal_error') {
+        hard.add(AcademicHardError(
+          id: hi++,
+          errorType: category,
+          originalText: v.originalSentence,
+          reason: evidence,
+          suggestion: correction,
+          evidence: evidence,
+          verified: true,
+        ));
+      } else {
+        flaws.add(AcademicLogicFlaw(
+          id: fi++,
+          originalText: v.originalSentence,
+          reason: evidence,
+          suggestion: correction,
+        ));
+      }
+    }
+
+    final covered = limited.length - failed;
+    final summary = StringBuffer()
+      ..write('逐句审阅 $covered 句：${hard.length} 处硬伤、${flaws.length} 处表述不严谨');
+    if (failed > 0) summary.write('；$failed 句复核失败未计入');
+    if (skipped > 0) summary.write('；超出上限，另有 $skipped 句未审');
+
+    final spec = subjects[chosen]!;
+    return AcademicReview(
+      agentName: '${spec.name}质检官',
+      subject: chosen,
+      summary: summary.toString(),
+      hardErrors: hard,
+      logicFlaws: flaws,
+      termCorrections: const [],
+      reviewAdvice: hard.isEmpty && flaws.isEmpty
+          ? '本段未发现知识性硬伤，建议按教材目录再过一遍概念定义。'
+          : '',
+      createdAt: DateTime.now(),
+    );
+  }
+
   /// 单句复核：只判这一句，按证据说话。
   ///
   /// [ragEvidence] 是教材原文片段（暂未接入 RAG 时留空），

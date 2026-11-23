@@ -182,4 +182,45 @@ void main() {
       expect(r.hardErrors.single.verified, isFalse);
     });
   });
+
+  group('逐句全审', () {
+    test('分句跳过标题与短句', () {
+      const text = """
+一、地下变态茎
+芋头是典型的块茎，属于叶的变态。
+球茎（如荸荠）有明显的节和节间。
+短。
+二、地上变态茎
+茎刺与叶刺是同源结构。
+""";
+      final list = AcademicReviewService.splitSentences(text);
+      expect(list.length, 3);
+      expect(list.first, '芋头是典型的块茎，属于叶的变态。');
+      expect(list.any((e) => e.startsWith('一、')), isFalse);
+      expect(list.any((e) => e == '短。'), isFalse);
+    });
+
+    test('fatal_error 进硬伤，warning 进不严谨，并按句聚合成 summary', () async {
+      final svc = AcademicReviewService(ai: (system, user) async {
+        if (system.contains('路由器')) {
+          return '{"subject_code":"botany","confidence":0.9,"reason":"植物"}';
+        }
+        if (system.contains('【待审句子】：芋头是典型的块茎')) {
+          return '{"original_sentence":"芋头是典型的块茎。","has_error":true,"error_level":"fatal_error","error_category":"分类归属错误","evidence":"芋头是球茎","correction":"芋头是球茎。","review_advice":"茎变态"}';
+        }
+        if (system.contains('【待审句子】：鳞茎（如洋葱）')) {
+          return '{"original_sentence":"鳞茎（如洋葱）由鳞叶包裹。","has_error":true,"error_level":"warning","error_category":"术语口语化","evidence":"应说明鳞茎盘","correction":"鳞茎由鳞茎盘和鳞叶组成。","review_advice":"补结构"}';
+        }
+        return '{"original_sentence":"x","has_error":false,"evidence":"经核实无误","correction":"","review_advice":""}';
+      });
+      final r = await svc.reviewAllSentences(
+          '芋头是典型的块茎，属于叶的变态。鳞茎（如洋葱）由鳞叶包裹。球茎（如荸荠）有节和节间。');
+      expect(r.summary, contains('逐句审阅'));
+      expect(r.hardErrors.length, 1);
+      expect(r.hardErrors.single.errorType, '分类归属错误');
+      expect(r.hardErrors.single.evidence, '芋头是球茎');
+      expect(r.logicFlaws.length, 1);
+      expect(r.logicFlaws.single.originalText, contains('鳞茎'));
+    });
+  });
 }
