@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:classnote/models/academic_review.dart';
 import 'package:classnote/services/academic_review_service.dart';
+import 'package:classnote/services/local_vector.dart';
 
 const String sampleBirdNote = '''
 植物学 · 第四章 茎的变态与叶的变态
@@ -109,10 +110,18 @@ void main() {
       ReviewEvidence('佛焰苞：天南星科花序外包被的变态叶，如红掌', source: '知识库'),
       ReviewEvidence('捕虫叶：触发靠感觉毛，消化靠消化腺分泌酶', source: '知识库'),
     ];
+    final index = EvidenceIndex.build([
+      for (final e in evidence)
+        VectorDoc(e.text, source: e.source, course: '植物学'),
+    ]);
     final review = await svc.reviewAllSentences(
       sampleBirdNote,
       course: '植物学',
       evidence: evidence,
+      retriever: (sentence) => index
+          .search(sentence, k: 2)
+          .map((r) => ReviewEvidence(r.doc.text, source: r.doc.source))
+          .toList(),
     );
     // ignore: avoid_print
     print('ALL ${jsonEncode({

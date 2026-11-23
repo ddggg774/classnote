@@ -20,6 +20,7 @@ import '../models/wiki_entry.dart';
 import '../models/summary_level.dart';
 import '../services/academic_review_service.dart';
 import '../services/db_service.dart';
+import '../services/local_vector.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
 import '../services/pending_fixer.dart';
@@ -1639,11 +1640,16 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       final AcademicReview review;
       if (mode == 'sentence') {
         final evidence = await _buildReviewEvidence(_note);
+        final index = await _buildEvidenceIndex(_note?.effectiveCourse ?? '');
         if (!mounted) return;
         review = await _academicReviewer.reviewAllSentences(
           source,
           course: _note?.course ?? '',
           evidence: evidence,
+          retriever: (sentence) => index
+              .search(sentence, k: 2)
+              .map((r) => ReviewEvidence(r.doc.text, source: r.doc.source))
+              .toList(),
           onProgress: (done, total) {
             if (!mounted) return;
             setState(() => _reviewProgress = '已审 $done/$total 句');
@@ -1674,6 +1680,36 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         });
       }
     }
+  }
+
+  /// 建本课程的向量索引：已确认知识库词条 + 同课程笔记的句子。
+  /// 教材正文目前没有，所以「教材段落」这一层先空着，接正文后把它加进 docs 即可。
+  Future<EvidenceIndex> _buildEvidenceIndex(String course) async {
+    final docs = <VectorDoc>[];
+    final key = course.trim();
+    if (key.isNotEmpty) {
+      try {
+        final entries = await WikiService()
+            .listByCourse(key, status: WikiEntryStatus.confirmed);
+        for (final e in entries) {
+          if (e.definition.trim().isEmpty) continue;
+          docs.add(VectorDoc('${e.term}：${e.definition}',
+              source: '知识库', course: key));
+        }
+      } catch (_) {}
+    }
+    try {
+      final notes = await _db.queryAll();
+      for (final n in notes) {
+        if (key.isNotEmpty && n.effectiveCourse != key) continue;
+        for (final s in AcademicReviewService.splitSentences(n.transcript)) {
+          docs.add(VectorDoc(s, source: '课堂笔记', course: key));
+          if (docs.length >= 800) break;
+        }
+        if (docs.length >= 800) break;
+      }
+    } catch (_) {}
+    return EvidenceIndex.build(docs);
   }
 
   /// 质检可引用的证据：本节术语表 + 本课程已确认的知识库词条。

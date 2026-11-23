@@ -308,6 +308,7 @@ class AcademicReviewService {
     String course = '',
     int maxSentences = 60,
     List<ReviewEvidence> evidence = const [],
+    List<ReviewEvidence> Function(String sentence)? retriever,
     void Function(int done, int total)? onProgress,
   }) async {
     final text = noteText.trim();
@@ -330,7 +331,19 @@ class AcademicReviewService {
       while (true) {
         final i = cursor++;
         if (i >= limited.length) return;
-        final picked = pickEvidence(limited[i], evidence);
+        // 先问向量检索（笔记/知识库句子），再补术语表这类短证据，去重后取前 3
+        final merged = <ReviewEvidence>[];
+        final seen = <String>{};
+        void take(ReviewEvidence e) {
+          if (merged.length >= 3) return;
+          final key = e.text.trim();
+          if (key.isEmpty || !seen.add(key)) return;
+          merged.add(e);
+        }
+
+        retriever?.call(limited[i]).forEach(take);
+        pickEvidence(limited[i], evidence).forEach(take);
+        final picked = merged;
         pickedPer[i] = picked;
         final rag = picked
             .map((p) => '【${p.source}】${p.text}')
@@ -399,10 +412,15 @@ class AcademicReviewService {
     if (failed > 0) summary.write('；$failed 句复核失败未计入');
     if (skipped > 0) summary.write('；超出上限，另有 $skipped 句未审');
     if (downgraded > 0) summary.write('；$downgraded 处因未引用知识库依据降为存疑');
-    if (evidence.isEmpty) {
+    final providedTexts = pickedPer
+        .expand((e) => e)
+        .map((e) => e.text.trim())
+        .where((t) => t.isNotEmpty)
+        .toSet();
+    if (providedTexts.isEmpty) {
       summary.write('；本次无知识库依据，结论仅凭模型知识');
     } else if (downgraded == 0) {
-      summary.write('；已提供 ${evidence.length} 条知识库依据');
+      summary.write('；已提供 ${providedTexts.length} 条依据（术语表/知识库/笔记）');
     }
 
     final spec = subjects[chosen]!;

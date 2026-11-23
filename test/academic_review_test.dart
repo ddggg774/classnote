@@ -271,4 +271,40 @@ void main() {
       expect(r.summary, isNot(contains('降为存疑')));
     });
   });
+
+  group('向量检索接入', () {
+    test('retriever 提供的依据能被引用并保留硬伤', () async {
+      final svc = AcademicReviewService(ai: (system, user) async {
+        if (system.contains('路由器')) {
+          return '{"subject_code":"botany","confidence":0.9,"reason":"植物"}';
+        }
+        return '{"original_sentence":"芋头是块茎。","has_error":true,"error_level":"fatal_error","error_category":"分类归属错误","evidence":"芋头是地下变态茎中的球茎，具环状节和退化叶","correction":"芋头是球茎。","review_advice":""}';
+      });
+      final r = await svc.reviewAllSentences(
+        '芋头是典型的块茎。',
+        retriever: (sentence) => const [
+          ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶', source: '课堂笔记'),
+        ],
+      );
+      expect(r.hardErrors.length, 1);
+      expect(r.summary, contains('已提供'));
+    });
+
+    test('retriever 给的依据没被引用 → 降为存疑', () async {
+      final svc = AcademicReviewService(ai: (system, user) async {
+        if (system.contains('路由器')) {
+          return '{"subject_code":"botany","confidence":0.9,"reason":"植物"}';
+        }
+        return '{"original_sentence":"芋头是块茎。","has_error":true,"error_level":"fatal_error","error_category":"分类归属错误","evidence":"我个人觉得不对","correction":"芋头是球茎。","review_advice":""}';
+      });
+      final r = await svc.reviewAllSentences(
+        '芋头是典型的块茎。',
+        retriever: (sentence) => const [
+          ReviewEvidence('芋头：地下变态茎中的球茎，具环状节和退化叶'),
+        ],
+      );
+      expect(r.hardErrors, isEmpty);
+      expect(r.logicFlaws.length, 1);
+    });
+  });
 }
