@@ -191,6 +191,10 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
         micAdvice: r.micAdvice,
         usability: r.usability,
         suppressedCount: budget.suppressed,
+        suppressedPending: budget.all.length > budget.kept.length
+            ? budget.all.sublist(budget.kept.length)
+            : const [],
+        droppedCount: budget.dropped,
       );
     }
 
@@ -248,6 +252,10 @@ C. 同音/近音误听，且上下文能唯一确定：sell wall → cell wall
       micAdvice: allAdvice.take(3).toList(),
       usability: usability,
       suppressedCount: budget.suppressed,
+      suppressedPending: budget.all.length > budget.kept.length
+          ? budget.all.sublist(budget.kept.length)
+          : const [],
+      droppedCount: budget.dropped,
     );
   }
 

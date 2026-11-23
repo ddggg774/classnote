@@ -24,10 +24,14 @@ class PendingTrimResult {
   /// 被压掉的条数（含模型自报被截断的条数）
   final int suppressed;
 
+  /// 被当作噪音直接过滤掉的条数（单字/纯数字等），单独记账，不混进 suppressed
+  final int dropped;
+
   const PendingTrimResult({
     required this.kept,
     required this.all,
     required this.suppressed,
+    this.dropped = 0,
   });
 
   bool get hasSuppressed => suppressed > 0;
@@ -60,13 +64,16 @@ class PendingBudget {
         .where((t) => t.isNotEmpty)
         .toSet();
 
-    // ① 过滤噪音
+    // ① 过滤噪音（过滤掉的条数要记账，不能静默消失）
+    var dropped = 0;
     final filtered = <PendingItem>[];
     for (final p in items) {
       final norm = normalize(p.snippet);
-      if (norm.isEmpty) continue;
-      if (norm.length < 2) continue;
-      if (RegExp(r'^[0-9]+$').hasMatch(norm)) continue;
+      if (norm.isEmpty || norm.length < 2 ||
+          RegExp(r'^[0-9]+$').hasMatch(norm)) {
+        dropped++;
+        continue;
+      }
       // 无候选的单次项不丢弃：它可能是「缺词」类提示，
       // 只是排序时排最后（score 0），预算不够时才被压进 suppressed。
       filtered.add(p);
@@ -158,7 +165,12 @@ class PendingBudget {
     final suppressed =
         (list.length - kept.length) + (modelSuppressed < 0 ? 0 : modelSuppressed);
 
-    return PendingTrimResult(kept: kept, all: list, suppressed: suppressed);
+    return PendingTrimResult(
+      kept: kept,
+      all: list,
+      suppressed: suppressed,
+      dropped: dropped,
+    );
   }
 
   static String _identity(PendingItem p) =>

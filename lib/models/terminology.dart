@@ -313,6 +313,12 @@ class CalibrationReport {
   /// 界面用它显示「另有 N 处未列出」，保证不静默丢信息。
   final int suppressedCount;
 
+  /// 被截断的具体条目（能拿到就展示，只读；模型自报截断的那些拿不到）。
+  final List<PendingItem> suppressedPending;
+
+  /// 被当作噪音过滤掉的条数（单字/纯数字等）
+  final int droppedCount;
+
   const CalibrationReport({
     required this.annotatedText,
     this.hits = const [],
@@ -321,7 +327,22 @@ class CalibrationReport {
     this.micAdvice = const [],
     this.usability,
     this.suppressedCount = 0,
+    this.suppressedPending = const [],
+    this.droppedCount = 0,
   });
+
+  /// 处理掉若干条待确认后，生成一份只改 pending 的报告（保留 hits/建议等）
+  CalibrationReport withPending(List<PendingItem> next) => CalibrationReport(
+        annotatedText: annotatedText,
+        hits: hits,
+        missedTerms: missedTerms,
+        pending: next,
+        micAdvice: micAdvice,
+        usability: usability,
+        suppressedCount: suppressedCount,
+        suppressedPending: suppressedPending,
+        droppedCount: droppedCount,
+      );
 
   int get fixCount => hits.where((h) => h.corrected).length;
   bool get hasText => annotatedText.trim().isNotEmpty;
@@ -359,6 +380,8 @@ class CalibrationReport {
       micAdvice: micAdvice,
       usability: usability,
       suppressedCount: suppressedCount,
+      suppressedPending: suppressedPending,
+      droppedCount: droppedCount,
     );
   }
 }

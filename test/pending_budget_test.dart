@@ -37,6 +37,7 @@ void main() {
       ]);
       expect(r.all.length, 2);
       expect(r.all.map((e) => e.snippet), containsAll(['心皮', '木兰科']));
+      expect(r.dropped, 3, reason: '单字/数字/纯标点各算一处噪音');
     });
 
     test('无候选但反复出现（count≥2）要保留', () {
@@ -167,5 +168,20 @@ void main() {
 
   test('normalize 去空白与标点、统一小写', () {
     expect(PendingBudget.normalize('Cell  Wall。'), 'cellwall');
+  });
+
+  test('withPending 保留 suppressed 列表与噪音计数', () {
+    const r = CalibrationReport(
+      annotatedText: 'x',
+      suppressedCount: 2,
+      suppressedPending: [PendingItem(snippet: 'a', candidates: ['b'])],
+      droppedCount: 1,
+    );
+    final next = r.withPending(const []);
+    expect(next.suppressedCount, 2);
+    expect(next.suppressedPending.length, 1);
+    expect(next.droppedCount, 1);
+    expect(next.pending, isEmpty);
+    expect(next.annotatedText, 'x');
   });
 }

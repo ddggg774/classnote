@@ -97,6 +97,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 上次落库时被预算压掉的条数（来自 summaryJson）
   int _savedSuppressed = 0;
 
+  /// 报告区是否展开「被预算压掉的条目」
+  bool _showSuppressed = false;
+
   /// 批量替换前保存的待确认快照；撤销时要连清单一起还原
   List<PendingItem>? _undoPendingSnapshot;
 
@@ -1394,6 +1397,130 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     }
   }
 
+  /// 报告区批量：按首选候选替换本次报告里的待确认项。
+  /// 报告里的项还没落库，替换后要顺手写成「已保存待确认」。
+  Future<void> _applyAllReportFirstChoice(CalibrationReport report) async {
+    if (_pendingBusy) return;
+    final targets =
+        report.pending.where((p) => p.candidates.isNotEmpty).toList();
+    if (targets.isEmpty) {
+      _showSnack('没有带候选的待确认项');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('按首选候选批量替换'),
+        content: Text(
+          '将把 ${targets.length} 处待确认按各自的首选候选替换，'
+          '多次出现的会全部替换；替换后仍可撤销。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('替换'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    setState(() => _pendingBusy = true);
+    try {
+      final original = _transcriptController.text;
+      final snapshot = List<PendingItem>.from(_savedPending);
+      var text = original;
+      var remaining = List<PendingItem>.from(report.pending);
+      var replacedTotal = 0;
+
+      for (final item in targets) {
+        final all = item.positions.length > 1 || item.count > 1;
+        final result =
+            PendingFixer.apply(text, item, item.candidates.first, all: all);
+        if (!result.changed) continue;
+        text = result.text;
+        replacedTotal += result.replaced;
+        remaining = remaining
+            .where((p) =>
+                !(p.snippet == item.snippet &&
+                    p.candidates.join('/') == item.candidates.join('/')))
+            .toList();
+        remaining = PendingFixer.relocateAll(text, remaining);
+      }
+
+      if (replacedTotal == 0) {
+        _showSnack('没有替换成功，原文可能已被改动');
+        return;
+      }
+
+      setState(() {
+        _undoTranscript = original;
+        _undoPendingSnapshot = snapshot;
+        _report = report.withPending(remaining);
+        _savedPending = remaining;
+      });
+      _transcriptController.text = text;
+      await _persistPendingChange(text, remaining);
+      if (!mounted) return;
+      _showSnack('已按首选替换 $replacedTotal 处');
+    } finally {
+      if (mounted) setState(() => _pendingBusy = false);
+    }
+  }
+
+  /// 报告区批量忽略：清掉本次待确认（不改正文），落库时清单为空。
+  Future<void> _ignoreAllReport(CalibrationReport report) async {
+    if (_pendingBusy || report.pending.isEmpty) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('全部忽略'),
+        content: Text('将清空本次 ${report.pending.length} 条待确认，正文不会改动。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('忽略'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _pendingBusy = true);
+    try {
+      final snapshot = List<PendingItem>.from(report.pending);
+      setState(() {
+        _report = report.withPending(const []);
+        _savedPending = const [];
+      });
+      await _persistPendingChange(_transcriptController.text, const []);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('已忽略本次待确认，正文未改动'),
+          action: SnackBarAction(
+            label: '撤销',
+            onPressed: () async {
+              await _persistPendingChange(
+                  _transcriptController.text, snapshot);
+              if (!mounted) return;
+              setState(() => _savedPending = snapshot);
+            },
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _pendingBusy = false);
+    }
+  }
+
   Widget _buildReportPanel(CalibrationReport report) {
     final pendingShown = _showAllReportPending
         ? report.pending
@@ -1464,6 +1591,36 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           if (report.pending.isNotEmpty) ...[
             const SizedBox(height: 8),
             _reportSectionTitle('待确认清单'),
+            Row(
+              children: [
+                TextButton(
+                  onPressed: _pendingBusy
+                      ? null
+                      : () => _applyAllReportFirstChoice(report),
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('全部按首选',
+                      style: TextStyle(fontSize: 11.5)),
+                ),
+                const SizedBox(width: 14),
+                TextButton(
+                  onPressed: _pendingBusy
+                      ? null
+                      : () => _ignoreAllReport(report),
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('全部忽略',
+                      style:
+                          TextStyle(fontSize: 11.5, color: Colors.grey)),
+                ),
+              ],
+            ),
             ...pendingShown.map((p) => InkWell(
                   // 有候选就能选替换；没候选且能定位就只定位
                   onTap: (p.candidates.isNotEmpty || p.canLocate)
@@ -1523,8 +1680,48 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                 ),
               ),
             if (report.suppressedCount > 0)
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      '另有 ${report.suppressedCount} 处低置信，未逐条列出',
+                      style:
+                          TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                    ),
+                  ),
+                  if (report.suppressedPending.isNotEmpty)
+                    TextButton(
+                      onPressed: () => setState(
+                          () => _showSuppressed = !_showSuppressed),
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        _showSuppressed
+                            ? '收起'
+                            : '查看 ${report.suppressedPending.length} 条',
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.indigo.shade600),
+                      ),
+                    ),
+                ],
+              ),
+            if (_showSuppressed && report.suppressedPending.isNotEmpty)
+              ...report.suppressedPending.map((p) => Padding(
+                    padding: const EdgeInsets.only(left: 4, top: 2),
+                    child: Text(
+                      '· ${p.snippet}'
+                      '${p.candidates.isNotEmpty ? '〔疑似：${p.candidates.join(' / ')}〕' : ''}'
+                      '${p.count > 1 ? '（出现 ${p.count} 次）' : ''}',
+                      style:
+                          TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                    ),
+                  )),
+            if (report.droppedCount > 0)
               Text(
-                '另有 ${report.suppressedCount} 处低置信，未逐条列出',
+                '另有 ${report.droppedCount} 处噪音（单字/数字）已自动忽略',
                 style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
               ),
           ],
