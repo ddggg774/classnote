@@ -37,7 +37,8 @@ class DbService {
   ///      section_no / section_title），记录这节课的教材位置。老笔记留空。
   /// v10 = notes 增加 language（zh/en，默认 zh）与 translation_json（英语课译文）。
   /// v11 = 新增 academic_reviews 表（学科专家质检结果，一篇笔记一份）。
-  static const int dbVersion = 11;
+  /// v12 = 新增 textbook_passages 表（教材摘录：实体书拍照/手抄的原文，供质检当依据）。
+  static const int dbVersion = 12;
 
   Database? _db;
 
@@ -162,6 +163,9 @@ class DbService {
         }
         if (oldVersion < 11) {
           await _createAcademicReviews(db);
+        }
+        if (oldVersion < 12) {
+          await _createTextbookPassages(db);
         }
       },
       ),
@@ -313,6 +317,7 @@ class DbService {
     );
 
     await _createAcademicReviews(db);
+    await _createTextbookPassages(db);
 
     await _seedTextbooksIfEmpty(db);
   }
@@ -328,6 +333,54 @@ class DbService {
         created_at INTEGER NOT NULL
       )
     ''');
+  }
+
+  /// 教材摘录：实体书没有电子版时，用户手抄/拍照识别后存下的原文段落。
+  /// 只存用户主动给的文本，不猜、不自动生成。
+  Future<void> _createTextbookPassages(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS textbook_passages (
+        id TEXT PRIMARY KEY,
+        course TEXT NOT NULL,
+        chapter TEXT NOT NULL DEFAULT '',
+        text TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_passage_course '
+      'ON textbook_passages(course)',
+    );
+  }
+
+  Future<void> addTextbookPassage({
+    required String course,
+    required String text,
+    String chapter = '',
+  }) async {
+    final db = await database;
+    await db.insert('textbook_passages', {
+      'id': 'p${DateTime.now().microsecondsSinceEpoch}',
+      'course': course.trim(),
+      'chapter': chapter.trim(),
+      'text': text.trim(),
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<List<Map<String, Object?>>> listTextbookPassages(String course) async {
+    final db = await database;
+    return db.query(
+      'textbook_passages',
+      where: 'course = ?',
+      whereArgs: [course.trim()],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  Future<void> deleteTextbookPassage(String id) async {
+    final db = await database;
+    await db.delete('textbook_passages', where: 'id = ?', whereArgs: [id]);
   }
 
   /// 保存（覆盖）一篇笔记的学科质检结果

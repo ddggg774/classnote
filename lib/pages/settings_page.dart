@@ -8,6 +8,7 @@ import '../services/audio_capture_profile.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
 import 'disclaimer_page.dart';
+import 'textbook_excerpt_page.dart';
 import 'textbook_list_page.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -326,7 +327,6 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   onChanged: (v) => setState(() => _autoCorrect = v),
                 ),
-                const SizedBox(height: 16),
 
                 // ── 拾音档位 ──
                 Row(
@@ -432,6 +432,22 @@ class _SettingsPageState extends State<SettingsPage> {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                         builder: (_) => const TextbookListPage()),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: const Icon(Icons.format_quote_outlined),
+                  title: const Text('教材摘录（质检依据）',
+                      style: TextStyle(fontSize: 13.5)),
+                  subtitle: Text('只有实体书？把关键定义抄进来，质检时会引用',
+                      style: TextStyle(
+                          fontSize: 11.5, color: Colors.grey.shade600)),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const TextbookExcerptPage()),
                   ),
                 ),
                 const SizedBox(height: 16),

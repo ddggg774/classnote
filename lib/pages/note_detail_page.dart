@@ -1699,6 +1699,14 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       } catch (_) {}
     }
     try {
+      final passages = await _db.listTextbookPassages(key);
+      for (final p in passages) {
+        final text = (p['text'] as String?)?.trim() ?? '';
+        if (text.isEmpty) continue;
+        docs.add(VectorDoc(text, source: '教材摘录', course: key));
+      }
+    } catch (_) {}
+    try {
       final notes = await _db.queryAll();
       for (final n in notes) {
         if (key.isNotEmpty && n.effectiveCourse != key) continue;
