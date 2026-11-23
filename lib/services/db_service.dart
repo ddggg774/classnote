@@ -138,6 +138,14 @@ class DbService {
         }
         if (oldVersion < 6) {
           await SearchIndex.createTables(db);
+          // 老库升级上来时历史笔记没有索引，不补的话两字以上检索一条都搜不到。
+          // 一次性重建，失败不影响升级（搜索页仍可用单字兜底）。
+          try {
+            final rows = await db.query('notes');
+            for (final row in rows) {
+              await _syncIndex(Note.fromMap(row), db);
+            }
+          } catch (_) {}
         }
         if (oldVersion < 7) {
           await _createWikiTables(db);
@@ -416,7 +424,8 @@ class DbService {
   }) async {
     final db = await database;
     await db.insert('textbook_passages', {
-      'id': 'p${DateTime.now().microsecondsSinceEpoch}',
+      // 同一微秒连续保存两条会撞主键，用 uuid
+      'id': 'p${const Uuid().v4()}',
       'course': course.trim(),
       'chapter': chapter.trim(),
       'text': text.trim(),
@@ -592,6 +601,29 @@ class DbService {
     await _syncIndex(note, db);
   }
 
+  /// 只更新总结相关字段（不碰 transcript）。
+  ///
+  /// 生成总结需要几分钟，期间正文可能被别的入口改过；
+  /// 整行 update 会把那些改动回滚，所以单独给一个字段级入口。
+  Future<void> updateSummary(
+    String noteId, {
+    required String summaryJson,
+    String? templateId,
+  }) async {
+    final db = await database;
+    await db.update(
+      'notes',
+      {
+        'summary_json': summaryJson,
+        if (templateId != null) 'template_id': templateId,
+      },
+      where: 'id = ?',
+      whereArgs: [noteId],
+    );
+    final note = await queryById(noteId);
+    if (note != null) await _syncIndex(note, db);
+  }
+
   /// 删除一条笔记（连同它的外部改写版本、质检结果一起删，避免残留正文）
   Future<void> delete(String id) async {
     final db = await database;
@@ -599,6 +631,8 @@ class DbService {
     try {
       await db.delete('note_rewrites', where: 'note_id = ?', whereArgs: [id]);
       await db.delete('academic_reviews', where: 'note_id = ?', whereArgs: [id]);
+      // 知识库出处里存着笔记原文摘句，不删会留下「已删笔记的正文片段」
+      await db.delete('wiki_sources', where: 'note_id = ?', whereArgs: [id]);
     } catch (_) {
       // 老库没有这些表时忽略；不能因为清理失败就删不掉笔记
     }

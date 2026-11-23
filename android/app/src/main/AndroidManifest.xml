@@ -4,6 +4,8 @@
 
     <!-- 麦克风权限：课堂语音转写，必需 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 音频效果（AGC/降噪/回声消除）：拾音档位依赖 AudioEffect，缺这条可能直接起不来 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- 网络权限：调用 DeepSeek AI 总结，必需 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 访问网络状态：判断网络是否可用（可选但推荐） -->

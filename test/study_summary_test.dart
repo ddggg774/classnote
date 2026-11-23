@@ -77,12 +77,9 @@ void main() {
       expect(s.mindMap.nodes, isEmpty);
     });
 
-    test('整篇就是纯 JSON（旧版行为）也能识别', () {
+    test('整篇只有 JSON 没有正文时抛异常，避免清空已有笔记', () {
       const raw = '{"root":"旧格式","nodes":[{"topic":"a","children":["b"]}]}';
-      final s = service.debugParseSummary(raw);
-      expect(s.mindMap.root, '旧格式');
-      expect(s.mindMap.nodes.length, 1);
-      expect(s.detailMarkdown, isEmpty);
+      expect(() => service.debugParseSummary(raw), throwsA(isA<AiException>()));
     });
 
     test('完全空的 Markdown 抛异常而不是返回空文档', () {

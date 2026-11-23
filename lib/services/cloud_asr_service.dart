@@ -133,6 +133,7 @@ class CloudAsrService {
   bool _processing = false;
   bool _retrying = false;
   bool _disposed = false;
+  StreamSubscription<RecordState>? _stateSub;
 
   int _recordedSeconds = 0; // 累计录音秒数（不含等待转写时间，用于修正时长统计）
   int _segmentElapsed = 0; // 当前段已录秒数
@@ -251,6 +252,16 @@ class CloudAsrService {
 
     _onText = onText;
     _onError = onError;
+    // 系统暂停（来电/其他应用抢麦）时界面必须知道，否则会一直显示在录
+    _stateSub ??= _recorder.onStateChanged().listen((state) {
+      if (_disposed || !_recording) return;
+      if (state == RecordState.pause) {
+        _onError?.call('录音被系统暂停（来电或麦克风被占用），恢复后会自动继续；这段时间是静音');
+        _emit();
+      } else if (state == RecordState.record) {
+        _emit();
+      }
+    });
     _chunkIndex = 0;
     _nextToAppend = 0;
     _recordedSeconds = 0;
@@ -434,6 +445,15 @@ class CloudAsrService {
     try {
       await _idleCompleter!.future.timeout(timeout);
     } on TimeoutException {
+      // 还在队列里的段转成「失败」，否则界面上没有补传入口，
+      // 用户只看到一句「转写完成」，实际缺了几分钟
+      for (final idx in _queue) {
+        final path = _paths[idx];
+        if (path != null) _failed[idx] = path;
+      }
+      _queue.clear();
+      _queued.clear();
+      _emit();
       _onError?.call('部分分段转写超时，已完成的文字已保留，剩余可在下方补传');
     } finally {
       _idleCompleter = null;
@@ -672,6 +692,8 @@ class CloudAsrService {
   /// 释放资源：取消计时器、清空队列、断掉回调，并停止/销毁录音器。
   /// 页面 dispose 时调用；置空回调可防止上传结果打到已销毁的 State 上。
   Future<void> dispose() async {
+    await _stateSub?.cancel();
+    _stateSub = null;
     _disposed = true;
     _chunkTimer?.cancel();
     _chunkTimer = null;

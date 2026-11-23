@@ -201,58 +201,6 @@ $_promptMindmapSpec
 5. 输出 Markdown，不要开场白。信息不足的类别直接省略，不要写空标题。
 ''';
 
-  /// 合并多段中间笔记为最终九段式文档
-  static const String _mergeSystemPrompt = '''
-你会收到同一节课若干片段的中间笔记（按讲课顺序）。
-请把它们合并整理成一份**详细、可直接复习**的九段式课堂笔记。
-
-铁律：
-1. 绝对不能编造任何片段里没有的内容。
-2. 任何片段里标了 `〔待确认〕` 的内容，在最终文档里必须保留该标注并汇总进
-   「# 疑问与待确认清单」。
-3. 公式、术语、代码、英文缩写保留原样。
-4. 章节顺序与标题严格照下面执行，没有内容的节写「本节未提及」，不要删节。
-5. 详细程度：合并后长度约为原始转写稿的 20%~40%。
-
-## 输出结构（严格按此顺序）
-# 课程信息
-# 知识点结构
-# 例题与解题步骤
-# 老师强调与考试作业提示
-# 课堂互动问答
-# 术语/公式/英文缩写表
-# 学习任务表
-# 疑问与待确认清单
-# 时间戳回溯
-
-各节的字段要求：
-- 课程信息：课程名 / 本节主题 / 学习目标 / 与前后知识的关联
-- 知识点结构：按 ## / ### 层级，每点含概念定义、公式/定理、推导步骤、适用条件、老师强调点、逻辑关系
-- 例题与解题步骤：题干、思路、关键步骤、答案、易错点；步骤缺失写 `〔转写缺失〕`
-- 老师强调与考试作业提示：重点、难点、易错点、考试范围、作业要求、提交方式、截止时间
-- 课堂互动问答：学生问 → 老师答 → 结论
-- 术语表：| 术语 | 位置或片段 | 简要解释 |
-- 学习任务表：| 任务 | 类型 | 截止时间 | 提交方式 |，没有写"未提及"
-- 疑问清单：- 位置/原文片段：原因 → `待确认`
-- 时间戳回溯：关键内容的时间点或原文片段索引
-
-最后附 JSON 代码块，是一棵详细思维导图（结构要求与正文一致）：
-
-```json
-{"root":"课程主题","branches":[
- {"id":"b0","title":"课程信息","children":[
-   {"id":"b0-1","title":"具体节点名","relation":"包含","details":["说明"],"source":"12:30「原文」","mark":"key","children":[]}
- ]}
-]}
-```
-
-一级分支固定 11 个且顺序不变：课程信息、学习目标、知识点结构、公式/定理、
-例题与解题步骤、易错点、老师强调、考试/作业提示、课堂问答、术语表、待确认清单；
-没有内容的分支也必须保留，内部写一个 title 为"未提及"的节点。
-层级 3~5 级，节点标题要具体，relation 从「前提/推导/因果/对比/包含/易错/考试相关」里选，
-mark 只能是 key/hard/pitfall/exam/unconfirmed/quote/none。
-''';
-
   // ───────────────────── 按档位构造提示词 ─────────────────────
 
   /// 教材信息片段：匹配到教材就带上，否则空串。
@@ -465,12 +413,22 @@ $textbook
   /// 合并用的提示词（长课堂才有），带上教材信息
   static String buildMergePrompt(
     SummaryLevel level, {
+    NoteTemplate? template,
     String courseName = '',
     String language = 'zh',
   }) {
-    final textbook = _textbookBlock(courseName);
-    final base = textbook.isEmpty ? _mergeSystemPrompt : '$textbook\n$_mergeSystemPrompt';
-    return _withLanguage(base, language);
+    // 合并阶段必须沿用用户选的模板与档位：原来写死九段式，
+    // 长课堂选「速览/实验报告」也会被合并成九段式。
+    final spec = buildPrompt(
+      template ?? TemplateService.defaultTemplate,
+      level,
+      courseName: courseName,
+      language: language,
+    );
+    return '你会收到同一节课若干片段的中间笔记（按讲课顺序）。'
+        '请把它们合并成一份完整笔记，严格遵守下面的结构、规则与篇幅要求；'
+        '不得编造片段里没有的内容；片段里标了〔待确认〕的内容必须保留标注。\n\n'
+        '$spec';
   }
 
   /// 通用补全：给一段 system + user，要回一段文本。
@@ -545,12 +503,21 @@ $textbook
       throw AiException('请求失败（状态码 ${response.statusCode}）');
     }
 
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    } catch (_) {
+      throw AiException('接口返回的不是合法 JSON（可能被网关拦截或截断）');
+    }
     final choices = decoded['choices'] as List?;
     if (choices == null || choices.isEmpty) {
       throw AiException('模型没有返回内容');
     }
-    final message = (choices.first as Map)['message'] as Map?;
+    final first = choices.first as Map;
+    if (first['finish_reason'] == 'length') {
+      throw AiException('模型输出被截断（达到长度上限），请减少单次处理的文本量');
+    }
+    final message = first['message'] as Map?;
     final content = (message?['content'] as String?)?.trim() ?? '';
     if (content.isEmpty) {
       throw AiException('模型返回了空内容');
@@ -616,7 +583,8 @@ $textbook
 
     final merged = await _chat(
       apiKey,
-      buildMergePrompt(level, courseName: courseName, language: language),
+      buildMergePrompt(level,
+          template: template, courseName: courseName, language: language),
       partials
           .asMap()
           .entries
@@ -666,19 +634,10 @@ $textbook
     }
 
     // 退一步：整篇就是纯 JSON（旧版行为 / 模型没写正文）
+    // 这里没有正文可写，不能把 JSON 当 detail 存进笔记——那会覆盖旧笔记，
+    // 所以无论如何都抛异常，让调用方保留原有内容。
     if (graph == null && content.trim().startsWith('{')) {
-      try {
-        final decoded = jsonDecode(content.trim());
-        if (decoded is Map<String, dynamic>) {
-          graph = MindGraph.fromJson(decoded);
-          return StudySummary(
-            detailMarkdown: '',
-            mindMap: _graphToLegacyMindMap(graph),
-            graph: graph,
-            chunked: chunked,
-          );
-        }
-      } catch (_) {}
+      throw AiException('模型只返回了 JSON、没有正文，请再点一次「重新总结」');
     }
 
     if (content.trim().isEmpty) {

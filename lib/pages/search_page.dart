@@ -83,8 +83,9 @@ class _SearchPageState extends State<SearchPage> {
       _error = null;
     });
     try {
-      // 先检索，再把片段喂给模型做归纳
-      final hits = _hits.isEmpty ? await _search.search(q) : _hits;
+      // 换了关键词就必须重搜；只有「同一问题再问一次」才复用旧命中
+      final needSearch = q != _lastQuery || _hits.isEmpty;
+      final hits = needSearch ? await _search.search(q) : _hits;
       final result = await _rag.answer(
         question: q,
         hits: hits,
@@ -93,6 +94,8 @@ class _SearchPageState extends State<SearchPage> {
       );
       if (!mounted) return;
       setState(() {
+        _lastQuery = q;
+        if (needSearch) _hits = hits;
         _answer = result.text;
         _answering = false;
       });

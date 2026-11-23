@@ -148,16 +148,30 @@ class TranslationService {
     for (final batch in batches) {
       final batchPairs = await _translateBatch(batch, startIndex: index);
       if (batchPairs == null) {
-        // 逐句失败 → 整段降级（只对单批有意义；多批时退化为整段拼接）
-        return _translateWhole(trimmed, sourceLang, targetLang);
+        // 短文本保持旧行为（整段降级）；长文本不再把整篇塞进一次请求，
+        // 否则必然超长被截断，译出来的东西还不报错。
+        if (trimmed.length <= maxCharsPerRequest) {
+          return _translateWhole(trimmed, sourceLang, targetLang);
+        }
+        final whole = await _translateWhole(
+          batch.join('\n'),
+          sourceLang,
+          targetLang,
+        );
+        pairs.addAll(whole.pairs);
+        index += batch.length;
+        continue;
       }
       pairs.addAll(batchPairs);
       index += batch.length;
     }
 
-    // 全量再校验一次：条数必须对得上
+    // 全量再校验一次：条数必须对得上，对不上就报错，不能拿残缺译文充数
     if (pairs.length != sentences.length) {
-      return _translateWhole(trimmed, sourceLang, targetLang);
+      if (trimmed.length <= maxCharsPerRequest) {
+        return _translateWhole(trimmed, sourceLang, targetLang);
+      }
+      throw Exception('译文条数与原文不一致（${pairs.length}/${sentences.length}），请重试');
     }
 
     return TranslationResult(

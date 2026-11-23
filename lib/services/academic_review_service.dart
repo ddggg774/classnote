@@ -365,6 +365,11 @@ class AcademicReviewService {
 
     await Future.wait(List.generate(4, (_) => worker()));
 
+    // 全部句子都调用失败时不能返回「0 处硬伤」：那不是干净，是没审
+    if (limited.isNotEmpty && failed == limited.length) {
+      throw Exception('质检没有拿到任何结论（$failed/${limited.length} 句失败），请检查网络或 API Key 后重试');
+    }
+
     final hard = <AcademicHardError>[];
     final flaws = <AcademicLogicFlaw>[];
     var hi = 1;

@@ -76,9 +76,16 @@ class StudySummary {
 
     // graph：新格式才有；没有就用 mindMap 降级生成
     final graphJson = json['graph'];
-    final graph = graphJson is Map<String, dynamic>
-        ? MindGraph.fromJson(graphJson)
-        : MindGraph.fromLegacyMindMap(mindMap);
+    // 导图字段结构不对时不能让整份总结解析失败：
+    // 正文/待确认都比导图重要，导图退化成空结构即可
+    MindGraph graph;
+    try {
+      graph = graphJson is Map<String, dynamic>
+          ? MindGraph.fromJson(graphJson)
+          : MindGraph.fromLegacyMindMap(mindMap);
+    } catch (_) {
+      graph = MindGraph.fromLegacyMindMap(mindMap);
+    }
 
     return StudySummary(
       detailMarkdown: detail,

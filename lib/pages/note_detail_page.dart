@@ -230,12 +230,32 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       _extras = parsed?.extras ?? const {};
       // 模板：存过就按存的来，没存过按课程推荐
       final savedTpl = note.templateId;
-      _template = (savedTpl != null
-              ? TemplateService.builtinById(savedTpl)
-              : null) ??
-          TemplateService.recommendFor(note.effectiveCourse);
+      // 先在内置+自定义合并列表里找，找不到再按课程推荐；
+      // 只查内置会让自定义模板在重进页面后被悄悄换掉
+      NoteTemplate? saved;
+      if (savedTpl != null) {
+        for (final t in _templates) {
+          if (t.id == savedTpl) {
+            saved = t;
+            break;
+          }
+        }
+      }
+      _template =
+          saved ?? TemplateService.recommendFor(note.effectiveCourse);
     });
     await _loadLocation(note);
+    if (widget.initialOffset >= 0) {
+      final off = widget.initialOffset
+          .clamp(0, _transcriptController.text.length);
+      setState(() => _tabIndex = 0);
+      _tabController.animateTo(0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _transcriptController.selection =
+            TextSelection.collapsed(offset: off);
+      });
+    }
     final pending = _pendingSharedText;
     if (pending != null) {
       _pendingSharedText = null;
@@ -607,12 +627,14 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         template: _template,
       );
       final summaryJson = result.encode();
-      final updated = _note!.copyWith(
+      // 只写总结相关字段：正文可能在这几分钟里被「保存原文/批量替换/导入改写」
+      // 改过，整行 update 会把那些改动一起回滚。
+      await _db.updateSummary(
+        _note!.id,
         summaryJson: summaryJson,
-        transcript: currentTranscript,
         templateId: _template?.id,
       );
-      await _db.update(updated);
+      final updated = await _db.queryById(_note!.id) ?? _note!;
 
       if (!mounted) return;
       setState(() {
@@ -1364,6 +1386,8 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               graph: parsed.graph,
               chunked: parsed.chunked,
               pending: remaining,
+              // 考点清单/复习题等一并保留：重建 StudySummary 时漏掉会被存成空
+              extras: parsed.extras,
               // 预算计数跟着列表一起存，重进页面才不会「另有 N 处」消失
               suppressedCount:
                   _report?.suppressedCount ?? parsed.suppressedCount,
@@ -1404,6 +1428,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         graph: parsed.graph,
         chunked: parsed.chunked,
         pending: const [],
+        extras: parsed.extras,
         suppressedCount: parsed.suppressedCount,
       ).encode(),
     );
@@ -2777,8 +2802,15 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       if (!mounted) return;
       setState(() {
         _undoTranscript = original;
-        if (report.hasText) _transcriptController.text = report.annotatedText;
-        _report = report;
+        if (report.hasText) {
+          // 正文显示的是插入〔改：…〕标注后的版本，位置必须按这份重算，
+          // 否则越靠后的待确认项跳得越偏。
+          final annotated = report.annotatedText;
+          _transcriptController.text = annotated;
+          _report = rawReport.withLocations(annotated);
+        } else {
+          _report = report;
+        }
       });
       if (report.isLowQuality) {
         _showSnack('本节转写质量偏低，已给出可用性评估而非强行纠错');

@@ -91,6 +91,9 @@ enum CaptureProfile {
         autoGain: autoGain,
         noiseSuppress: noiseSuppress,
         echoCancel: echoCancel,
+        // 来电/导航/语音播报会抢音频焦点；默认 pause 后不会再自己继续，
+        // 这里要求系统在焦点恢复时自动续录（配合 CloudAsrService 的状态监听）
+        audioInterruption: AudioInterruptionMode.pauseResume,
       );
 
   /// ASR 需要的采样率
