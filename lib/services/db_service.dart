@@ -40,7 +40,8 @@ class DbService {
   /// v11 = 新增 academic_reviews 表（学科专家质检结果，一篇笔记一份）。
   /// v12 = 新增 textbook_passages 表（教材摘录：实体书拍照/手抄的原文，供质检当依据）。
   /// v13 = 新增 note_rewrites 表（外部改写版本，保留历史，不覆盖原笔记）。
-  static const int dbVersion = 13;
+  /// v14 = 新增 pending_audio_segments 表（转写失败/中断后保留的音频段）。
+  static const int dbVersion = 14;
 
   Database? _db;
 
@@ -179,6 +180,9 @@ class DbService {
         }
         if (oldVersion < 13) {
           await _createNoteRewrites(db);
+        }
+        if (oldVersion < 14) {
+          await _createPendingAudioSegments(db);
         }
       },
       ),
@@ -332,6 +336,7 @@ class DbService {
     await _createAcademicReviews(db);
     await _createTextbookPassages(db);
     await _createNoteRewrites(db);
+    await _createPendingAudioSegments(db);
 
     await _seedTextbooksIfEmpty(db);
   }
@@ -347,6 +352,69 @@ class DbService {
         created_at INTEGER NOT NULL
       )
     ''');
+  }
+
+  /// 未完成的音频段：转写失败或被中断后保留的 wav，用户可在设置里补传。
+  Future<void> _createPendingAudioSegments(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_audio_segments (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        segment_index INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_seg_note '
+      'ON pending_audio_segments(note_id)',
+    );
+  }
+
+  Future<void> addPendingAudioSegment(
+    String noteId,
+    int segmentIndex,
+    String path,
+  ) async {
+    final db = await database;
+    // 同一笔记同段只留一条，避免反复失败写出一堆重复行
+    await db.delete(
+      'pending_audio_segments',
+      where: 'note_id = ? AND segment_index = ?',
+      whereArgs: [noteId, segmentIndex],
+    );
+    await db.insert('pending_audio_segments', {
+      'id': 's${const Uuid().v4()}',
+      'note_id': noteId,
+      'segment_index': segmentIndex,
+      'path': path,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<List<Map<String, Object?>>> listPendingAudioSegments() async {
+    final db = await database;
+    return db.query('pending_audio_segments', orderBy: 'created_at ASC');
+  }
+
+  Future<void> deletePendingAudioSegment(String id) async {
+    final db = await database;
+    await db.delete('pending_audio_segments', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> deletePendingAudioSegmentAt(String noteId, int idx) async {
+    final db = await database;
+    await db.delete(
+      'pending_audio_segments',
+      where: 'note_id = ? AND segment_index = ?',
+      whereArgs: [noteId, idx],
+    );
+  }
+
+  Future<void> deletePendingAudioSegmentsOf(String noteId) async {
+    final db = await database;
+    await db.delete('pending_audio_segments',
+        where: 'note_id = ?', whereArgs: [noteId]);
   }
 
   /// 外部改写版本：从 DeepSeek 等 App 分享回来的稿子存这里，**不覆盖 summary_json**。

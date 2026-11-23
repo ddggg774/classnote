@@ -152,6 +152,12 @@ class CloudAsrService {
   Function(String text)? _onText;
   Function(String msg)? _onError;
 
+  /// 补传成功时回调（段号, 文本），页面用它替换正文里的失败占位
+  void Function(int idx, String text)? _onReplaceSegment;
+
+  /// 某段永久失败时回调（段号, 音频路径），页面用它登记「未完成音频段」
+  void Function(int idx, String path)? _onSegmentFailed;
+
   final ValueNotifier<AsrProgress> progress =
       ValueNotifier<AsrProgress>(const AsrProgress());
 
@@ -247,11 +253,15 @@ class CloudAsrService {
   Future<void> startRecording({
     required Function(String text) onText,
     required Function(String msg) onError,
+    void Function(int idx, String text)? onReplaceSegment,
+    void Function(int idx, String path)? onSegmentFailed,
   }) async {
     if (_recording || _disposed) return;
 
     _onText = onText;
     _onError = onError;
+    _onReplaceSegment = onReplaceSegment;
+    _onSegmentFailed = onSegmentFailed;
     // 系统暂停（来电/其他应用抢麦）时界面必须知道，否则会一直显示在录
     _stateSub ??= _recorder.onStateChanged().listen((state) {
       if (_disposed || !_recording) return;
@@ -421,7 +431,10 @@ class CloudAsrService {
   void abandonPendingSegments() {
     for (final idx in _queue) {
       final path = _paths[idx];
-      if (path != null) _failed[idx] = path;
+      if (path != null) {
+        _failed[idx] = path;
+        _onSegmentFailed?.call(idx, path);
+      }
     }
     _queue.clear();
     _queued.clear();
@@ -543,6 +556,7 @@ class CloudAsrService {
           _results[idx] = '〔第 ${idx + 1} 段语音识别失败'
               '${fatal ? '' : '（多次重试未成功）'}：${error ?? '未知原因'}〕';
           _failed[idx] = path;
+          _onSegmentFailed?.call(idx, path);
           _onError?.call('第 ${idx + 1} 段识别失败：${error ?? '未知原因'}');
         }
 
@@ -592,9 +606,12 @@ class CloudAsrService {
           }
           if (text == null) throw AsrException('补传失败，可再试一次');
           if (_disposed) return;
-          // 该段原本在正文里已留下占位，补传结果明确标注段号追加到末尾，
-          // 用户一眼能看出它属于哪里，不会误以为顺序错乱。
-          _onText?.call('〔补传 第 ${idx + 1} 段〕\n$text');
+          // 优先替换正文里那条失败占位；没有回调（老调用方）才追加
+          if (_onReplaceSegment != null) {
+            _onReplaceSegment!(idx, text);
+          } else {
+            _onText?.call('〔补传 第 ${idx + 1} 段〕\n$text');
+          }
           _queued.remove(idx);
           await _deleteQuietly(path);
           _paths.remove(idx);

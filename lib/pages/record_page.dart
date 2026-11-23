@@ -153,6 +153,29 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
   }
 
   /// 增量写入草稿。没有任何内容时不建空草稿。
+  /// 补传成功：把正文里的失败占位换成真实文字，并删掉待补传登记
+  Future<void> _replaceSegmentPlaceholder(int idx, String text) async {
+    final marker = RegExp('〔第 ${idx + 1} 段语音识别失败[^〕]*〕');
+    final current = _transcriptController.text;
+    final next = marker.hasMatch(current)
+        ? current.replaceAll(marker, text)
+        : '$current\n〔补传 第 ${idx + 1} 段〕\n$text';
+    _transcriptController.text = next;
+    await _persistDraft(force: true);
+    final id = _draftId;
+    if (id != null) {
+      await _db.deletePendingAudioSegmentAt(id, idx);
+    }
+  }
+
+  /// 某段永久失败：登记到「未完成的音频段」，用户可在设置里补传
+  Future<void> _recordFailedSegment(int idx, String path) async {
+    await _persistDraft(force: true);
+    final id = _draftId;
+    if (id == null) return;
+    await _db.addPendingAudioSegment(id, idx, path);
+  }
+
   Future<void> _persistDraft({required bool force}) async {
     final text = _transcriptController.text;
     if (!force && text == _lastSavedTranscript) return;
@@ -293,6 +316,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     try {
       await _asr.startRecording(
         onText: _appendText,
+        onReplaceSegment: _replaceSegmentPlaceholder,
+        onSegmentFailed: _recordFailedSegment,
         onError: (msg) {
           if (!mounted) return;
           _showSnack(msg);

@@ -8,6 +8,7 @@ import '../services/audio_capture_profile.dart';
 import '../services/settings_service.dart';
 import '../services/skill_registry.dart';
 import 'disclaimer_page.dart';
+import 'pending_audio_page.dart';
 import 'textbook_excerpt_page.dart';
 import 'textbook_list_page.dart';
 
@@ -498,6 +499,21 @@ class _SettingsPageState extends State<SettingsPage> {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                         builder: (_) => const TextbookExcerptPage()),
+                  ),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: const Icon(Icons.graphic_eq),
+                  title: const Text('未完成的音频段',
+                      style: TextStyle(fontSize: 13.5)),
+                  subtitle: Text('转写失败或中断后保留的录音，可在这里补传',
+                      style: TextStyle(
+                          fontSize: 11.5, color: Colors.grey.shade600)),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const PendingAudioPage()),
                   ),
                 ),
                 const SizedBox(height: 16),
