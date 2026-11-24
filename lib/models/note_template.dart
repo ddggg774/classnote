@@ -91,11 +91,6 @@ class NoteTemplate {
 
   final List<TemplateSection> sections;
 
-  /// 可选：覆盖思维导图的一级分支。
-  /// 为空时沿用 MindGraph.requiredBranches 的 11 个固定分支——
-  /// 这是刻意的向后兼容：现有导图测试与导出都依赖那 11 个分支。
-  final List<String> mindmapBranches;
-
   /// 是否内置。内置模板不可删除，但可以复制成自定义再改。
   final bool builtin;
 
@@ -107,7 +102,6 @@ class NoteTemplate {
     this.scene = '',
     this.course = '',
     required this.sections,
-    this.mindmapBranches = const [],
     this.builtin = false,
     this.sortOrder = 0,
   });
@@ -123,16 +117,12 @@ class NoteTemplate {
   /// 章节标题列表（导图分支的默认来源）
   List<String> get sectionTitles => sections.map((s) => s.title).toList();
 
-  /// 是否覆盖导图分支
-  bool get overridesMindmap => mindmapBranches.isNotEmpty;
-
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         if (scene.isNotEmpty) 'scene': scene,
         if (course.isNotEmpty) 'course': course,
         'sections': sections.map((s) => s.toJson()).toList(),
-        if (mindmapBranches.isNotEmpty) 'mindmapBranches': mindmapBranches,
         'builtin': builtin,
         'sortOrder': sortOrder,
       };
@@ -145,9 +135,6 @@ class NoteTemplate {
         sections: ((json['sections'] as List?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(TemplateSection.fromJson)
-            .toList(),
-        mindmapBranches: ((json['mindmapBranches'] as List?) ?? const [])
-            .map((e) => e.toString())
             .toList(),
         builtin: json['builtin'] as bool? ?? false,
         sortOrder: (json['sortOrder'] as num?)?.toInt() ?? 0,
@@ -174,7 +161,6 @@ class NoteTemplate {
     String? scene,
     String? course,
     List<TemplateSection>? sections,
-    List<String>? mindmapBranches,
     bool? builtin,
     int? sortOrder,
   }) =>
@@ -184,7 +170,6 @@ class NoteTemplate {
         scene: scene ?? this.scene,
         course: course ?? this.course,
         sections: sections ?? this.sections,
-        mindmapBranches: mindmapBranches ?? this.mindmapBranches,
         builtin: builtin ?? this.builtin,
         sortOrder: sortOrder ?? this.sortOrder,
       );

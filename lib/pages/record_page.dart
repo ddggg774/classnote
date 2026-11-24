@@ -585,15 +585,8 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
 
     return StudySummary(
       detailMarkdown: md,
-      // 有导图就反推一份两层结构给旧功能用；没有就留空
-      mindMap: hasGraph
-          ? _graphToLegacy(graph)
-          : MindMapData(root: '', nodes: const []),
-      graph: hasGraph
-          ? graph
-          : MindGraph.fromLegacyMindMap(
-              MindMapData(root: '', nodes: const []),
-            ),
+      // 导图单独生成；没有就留空
+      graph: hasGraph ? graph : const MindGraph(root: '', branches: []),
       // 待确认项必须落库：否则用户退出详情页再进来就看不到，
       // 「点击定位」也失去了对象。
       pending: _buildPendingItems(result),
@@ -643,22 +636,6 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     }).toList();
   }
 
-  /// 把 3-5 级 graph 压成两层 MindMapData（给旧的「大纲」Tab 与 PNG 导出）
-  MindMapData _graphToLegacy(MindGraph graph) {
-    final nodes = <MindNode>[];
-    for (final branch in graph.branches) {
-      final children = <String>[];
-      for (final child in branch.children) {
-        children.add(child.title);
-        // 再下一层的标题也带进来，避免大纲太单薄
-        for (final grand in child.children) {
-          children.add(grand.title);
-        }
-      }
-      nodes.add(MindNode(topic: branch.title, children: children));
-    }
-    return MindMapData(root: graph.root, nodes: nodes);
-  }
 
   /// 完成并记录：先确保录音已收尾，再保存
   Future<void> _finishAndSave() async {

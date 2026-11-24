@@ -629,7 +629,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       // 流程改为「先只出详细笔记」：导图必须等正文定稿后再单独生成
       final detailOnly = StudySummary(
         detailMarkdown: result.detailMarkdown,
-        mindMap: result.mindMap,
         graph: const MindGraph(root: '', branches: []),
         pending: result.pending,
         extras: result.extras,
@@ -1388,7 +1387,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           ? note.summaryJson
           : StudySummary(
               detailMarkdown: parsed.detailMarkdown,
-              mindMap: parsed.mindMap,
               graph: parsed.graph,
               chunked: parsed.chunked,
               pending: remaining,
@@ -1430,7 +1428,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     final updated = note.copyWith(
       summaryJson: StudySummary(
         detailMarkdown: parsed.detailMarkdown,
-        mindMap: parsed.mindMap,
         graph: parsed.graph,
         chunked: parsed.chunked,
         pending: const [],
@@ -1897,17 +1894,18 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       ),
     );
     if (ok != true || !mounted) return;
-    final parsed = StudySummary.tryDecode(_note?.summaryJson);
+    final note = _note;
+    if (note == null) return;
+    final parsed = StudySummary.tryDecode(note.summaryJson);
     final summary = StudySummary(
       detailMarkdown: next,
-      mindMap: MindMapData(root: '', nodes: []),
       graph: const MindGraph(root: '', branches: []),
       pending: parsed?.pending ?? const [],
       extras: parsed?.extras ?? const {},
       suppressedCount: parsed?.suppressedCount ?? 0,
     );
-    await _db.updateSummary(_note!.id, summaryJson: summary.encode());
-    final updated = await _db.queryById(_note!.id) ?? _note!;
+    await _db.updateSummary(note.id, summaryJson: summary.encode());
+    final updated = await _db.queryById(note.id) ?? note;
     if (!mounted) return;
     setState(() {
       _note = updated;
@@ -2353,17 +2351,18 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     if (ok != true || !mounted) return;
     // 一键替换：只换详细笔记，原文不动；旧导图清空，等用户重新生成。
     // 不保留旧版本（按需求），所以不再写 note_rewrites。
-    final parsed = StudySummary.tryDecode(_note?.summaryJson);
+    final note = _note;
+    if (note == null) return;
+    final parsed = StudySummary.tryDecode(note.summaryJson);
     final summary = StudySummary(
       detailMarkdown: content,
-      mindMap: MindMapData(root: '', nodes: []),
       graph: const MindGraph(root: '', branches: []),
       pending: parsed?.pending ?? const [],
       extras: parsed?.extras ?? const {},
       suppressedCount: parsed?.suppressedCount ?? 0,
     );
-    await _db.updateSummary(_note!.id, summaryJson: summary.encode());
-    final updated = await _db.queryById(_note!.id) ?? _note!;
+    await _db.updateSummary(note.id, summaryJson: summary.encode());
+    final updated = await _db.queryById(note.id) ?? note;
     if (!mounted) return;
     setState(() {
       _note = updated;
@@ -3207,7 +3206,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       final parsed = StudySummary.tryDecode(_note!.summaryJson);
       final summary = StudySummary(
         detailMarkdown: detail,
-        mindMap: parsed?.mindMap ?? MindMapData(root: '', nodes: []),
         graph: graph,
         pending: parsed?.pending ?? const [],
         extras: parsed?.extras ?? const {},
@@ -3512,14 +3510,27 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     if (_graph == null || _graph!.branches.isEmpty) {
       return const SizedBox.shrink();
     }
-    return Offstage(
-      offstage: true,
-      child: SizedBox(
-        width: 1200,
-        height: 1600,
-        child: RepaintBoundary(
-          key: _graphPdfKey,
-          child: GraphCanvas(graph: _graph!, onNodeTap: (_) {}),
+    // 不能用 Offstage：离屏子树不参与绘制，toImage 会得到空白/断言失败。
+    // 这里用「零尺寸盒子 + OverflowBox + 远距离平移」：布局不占位，但仍然绘制。
+    return SizedBox(
+      width: 0,
+      height: 0,
+      child: OverflowBox(
+        alignment: Alignment.topLeft,
+        minWidth: 0,
+        maxWidth: 1200,
+        minHeight: 0,
+        maxHeight: 1600,
+        child: Transform.translate(
+          offset: const Offset(-20000, -20000),
+          child: RepaintBoundary(
+            key: _graphPdfKey,
+            child: SizedBox(
+              width: 1200,
+              height: 1600,
+              child: GraphCanvas(graph: _graph!, onNodeTap: (_) {}),
+            ),
+          ),
         ),
       ),
     );

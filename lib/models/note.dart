@@ -216,30 +216,7 @@ class Note {
 
 /// AI 总结的结构化数据：一个中心主题 + 多个要点，每个要点带子点。
 /// 对应思维导图：中心 -> 分支 -> 子分支。
-class MindMapData {
-  final String root;                 // 中心主题
-  final List<MindNode> nodes;        // 一级要点
 
-  MindMapData({required this.root, required this.nodes});
-
-  factory MindMapData.fromJson(Map<String, dynamic> json) {
-    final rawNodes = (json['nodes'] as List?) ?? [];
-    return MindMapData(
-      root: (json['root'] as String?) ?? '本课总结',
-      nodes: rawNodes
-          .whereType<Map<String, dynamic>>()
-          .map((n) => MindNode.fromJson(n))
-          .toList(),
-    );
-  }
-
-  Map<String, dynamic> toJson() => {
-        'root': root,
-        'nodes': nodes.map((n) => n.toJson()).toList(),
-      };
-}
-
-/// 思维导图的一个要点节点
 class MindNode {
   final String topic;              // 要点标题
   final List<String> children;     // 子点

@@ -46,15 +46,7 @@ String? buildSummaryJson(ClassroomResult result) {
 
   return StudySummary(
     detailMarkdown: md,
-    mindMap: hasGraph
-        ? MindMapData(
-            root: graph.root,
-            nodes: nodes,
-          )
-        : MindMapData(root: '', nodes: const []),
-    graph: hasGraph
-        ? graph
-        : MindGraph.fromLegacyMindMap(MindMapData(root: '', nodes: const [])),
+    graph: hasGraph ? graph : const MindGraph(root: '', branches: []),
   ).encode();
 }
 
@@ -105,11 +97,6 @@ void main() {
       expect(decoded.graph.branches, isNotEmpty);
       expect(decoded.graph.maxDepth, greaterThanOrEqualTo(2));
 
-      // ④ legacy 大纲也有内容（旧 Tab 与 PNG 导出依赖它）
-      expect(decoded.mindMap.nodes, isNotEmpty,
-          reason: 'legacy mindMap 必须由 graph 反推出来，否则大纲 Tab 会空白');
-      // ignore: avoid_print
-      print('=== legacy 大纲 ${decoded.mindMap.nodes.length} 个一级节点');
     }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('待确认项带上位置并能随总结落库', () async {
@@ -170,10 +157,7 @@ void main() {
       // 落库往返
       final json = StudySummary(
         detailMarkdown: result.summary ?? '',
-        mindMap: MindMapData(root: '植物学', nodes: const []),
-        graph: result.graph ??
-            MindGraph.fromLegacyMindMap(
-                MindMapData(root: '', nodes: const [])),
+        graph: result.graph ?? const MindGraph(root: '', branches: []),
         pending: located.pending,
       ).encode();
       final decoded = StudySummary.tryDecode(json);

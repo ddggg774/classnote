@@ -18,12 +18,14 @@ Future<Uint8List> buildPdfFromImage(ui.Image image) async {
   final h = image.height;
   final rgba = bytes.buffer.asUint8List();
 
-  // PDF 图片不支持 alpha 通道：转成 RGB 再压缩
+  // PDF 图片不支持 alpha 通道：按白底做一次合成，避免透明区域变黑
   final rgb = Uint8List(w * h * 3);
   for (var i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
-    rgb[j] = rgba[i];
-    rgb[j + 1] = rgba[i + 1];
-    rgb[j + 2] = rgba[i + 2];
+    final a = rgba[i + 3];
+    final inv = 255 - a;
+    rgb[j] = (rgba[i] * a + 255 * inv) ~/ 255;
+    rgb[j + 1] = (rgba[i + 1] * a + 255 * inv) ~/ 255;
+    rgb[j + 2] = (rgba[i + 2] * a + 255 * inv) ~/ 255;
   }
   final compressed = Uint8List.fromList(ZLibCodec(level: 6).encode(rgb));
 

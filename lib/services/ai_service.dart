@@ -18,7 +18,6 @@ import 'package:http/http.dart' as http;
 
 import '../config.dart';
 import '../models/mind_graph.dart';
-import '../models/note.dart';
 import '../models/note_template.dart';
 import '../models/summary_level.dart';
 import 'template_service.dart';
@@ -656,31 +655,11 @@ $textbook
     graph ??= const MindGraph(root: '本课思维导图', branches: []);
     return StudySummary(
       detailMarkdown: content.trim(),
-      mindMap: _graphToLegacyMindMap(graph),
       graph: graph,
       chunked: chunked,
     );
   }
 
-  /// 把详细导图压成旧的两层 MindMap。
-  /// 为什么要这一步：详情页的「大纲」Tab 和 PNG 导出仍在用 MindMapData，
-  /// 由 graph 反推可以保证两者内容一致，不必让模型输出两份。
-  MindMapData _graphToLegacyMindMap(MindGraph graph) {
-    return MindMapData(
-      root: graph.root,
-      nodes: graph.branches.map((b) {
-        // 二级节点作为旧结构的 children，details 也并进去，避免信息丢失
-        final children = <String>[];
-        for (final d in b.details) {
-          children.add(d);
-        }
-        for (final c in b.children) {
-          children.add(c.title);
-        }
-        return MindNode(topic: b.title, children: children);
-      }).toList(),
-    );
-  }
 
   /// 匹配末尾的 ```json ... ``` 块，返回 (json 内容, 去掉该块后的正文)。
   ///

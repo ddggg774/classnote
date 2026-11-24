@@ -11,7 +11,6 @@
 // 关系标签（relation）：前提 / 推导 / 因果 / 对比 / 包含 / 易错 / 考试相关
 import 'dart:convert';
 
-import 'note.dart' show MindMapData;
 
 /// 节点的视觉标记。用枚举而不是裸字符串，保证渲染和导出不会各写一套。
 enum NodeMark {
@@ -223,26 +222,6 @@ class MindGraph {
   /// 用途：本次改版之前生成的笔记只有旧结构，没有 3–5 级详细导图。
   /// 与其让「导图」Tab 空着，不如把它转成两层树，让用户至少能看能导出，
   /// 同时在界面上提示「点重新总结可获得详细导图」。
-  factory MindGraph.fromLegacyMindMap(MindMapData legacy) {
-    return MindGraph(
-      root: legacy.root,
-      branches: legacy.nodes.asMap().entries.map((e) {
-        final n = e.value;
-        return MindGraphNode(
-          id: 'b${e.key}',
-          title: n.topic.isEmpty ? '要点${e.key + 1}' : n.topic,
-          relation: '包含',
-          children: n.children.asMap().entries.map((ce) {
-            return MindGraphNode(
-              id: 'b${e.key}-${ce.key}',
-              title: ce.value,
-              relation: '包含',
-            );
-          }).toList(),
-        );
-      }).toList(),
-    );
-  }
 
   static MindGraph? tryDecode(String? raw) {
     if (raw == null || raw.isEmpty) return null;

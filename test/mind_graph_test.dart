@@ -8,7 +8,6 @@
 //   ⑤ 旧数据降级不崩。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:classnote/models/mind_graph.dart';
-import 'package:classnote/models/note.dart';
 import 'package:classnote/services/mind_graph_exporter.dart';
 
 /// 构造一棵 3 级样例树
@@ -141,24 +140,6 @@ void main() {
       expect(MindGraph.tryDecode('not json'), isNull);
       expect(MindGraph.tryDecode(''), isNull);
       expect(MindGraph.tryDecode(null), isNull);
-    });
-  });
-
-  group('旧数据降级', () {
-    test('两层 MindMap 能转成 graph，不丢节点', () {
-      final legacy = MindMapData(
-        root: '老课程',
-        nodes: [
-          MindNode(topic: '极限', children: ['定义', '性质']),
-        ],
-      );
-      final g = MindGraph.fromLegacyMindMap(legacy);
-      expect(g.root, '老课程');
-      expect(g.branches.length, 1);
-      expect(g.branches.first.title, '极限');
-      expect(g.branches.first.children.length, 2);
-      // 降级后只有两层，页面据此提示"重新总结可获得详细导图"
-      expect(g.maxDepth, 2);
     });
   });
 

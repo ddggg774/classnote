@@ -137,7 +137,6 @@ void main() {
           ),
           TemplateSection(title: '第二节', required: false),
         ],
-        mindmapBranches: ['甲', '乙'],
         sortOrder: 5,
       );
       final decoded = NoteTemplate.tryDecode(original.encode())!;
@@ -150,7 +149,6 @@ void main() {
       expect(decoded.sections.first.needQuote, isTrue);
       expect(decoded.sections.first.needTable, isTrue);
       expect(decoded.sections[1].required, isFalse);
-      expect(decoded.mindmapBranches, ['甲', '乙']);
       expect(decoded.sortOrder, 5);
     });
 
@@ -301,17 +299,7 @@ void main() {
       expect(p.contains('```json'), isFalse);
     });
 
-    test('模板声明 mindmapBranches 也不会写进正文提示词', () {
-      const t = NoteTemplate(
-        id: 'custom-mm',
-        name: '自定义导图',
-        sections: [TemplateSection(title: '甲节')],
-        mindmapBranches: ['甲节', '乙节', '丙节'],
-      );
-      final p = AiService.buildPrompt(t, SummaryLevel.normal);
-      expect(p.contains('甲节、乙节、丙节'), isFalse);
-      expect(p.contains('一级分支固定'), isFalse);
-    });
+
   });
 
   group('章节渲染', () {

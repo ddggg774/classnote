@@ -1,28 +1,21 @@
 // lib/models/study_note.dart
 // 详细课堂笔记的数据结构。
 //
-// 一次总结产出三份东西：
-//   ① detailMarkdown：九段式详细笔记（可读、可二次编辑、可导出 .md）
-//   ② mindMap：旧的两层导图（保留，供旧的导图 Tab / 导出兼容）
-//   ③ graph：新的 3–5 级详细导图（主图+子图、关系、标记、来源回溯）
+// 一次总结只产出详细笔记（detailMarkdown）；
+// 思维导图（graph）在正文定稿后单独生成，见 AiService.generateMindGraph。
 //
-// 为什么 ② 和 ③ 都留：②已被页面和 PNG 导出依赖，直接删会把老功能弄坏；
-// ③ 是新规格。两者由同一次 LLM 调用返回，不额外花钱。
-// 模型没给 ③ 时，用 ② 自动降级生成一份，保证老数据和新数据都能看。
+// 老数据的 summary_json 里可能还带 mindMap 字段：解析时直接忽略，
+// 不再保留两层导图模型（2026-11 起大纲模块已删除）。
 
 import 'dart:convert';
 
 import 'mind_graph.dart';
-import 'note.dart' show MindMapData;
 import 'terminology.dart';
 
 /// 一次「详细总结」的产物
 class StudySummary {
   /// 固定结构的详细笔记（Markdown）
   final String detailMarkdown;
-
-  /// 结构化要点（两层，供兼容用途）
-  final MindMapData mindMap;
 
   /// 3–5 级详细导图
   final MindGraph graph;
@@ -45,7 +38,6 @@ class StudySummary {
 
   const StudySummary({
     required this.detailMarkdown,
-    required this.mindMap,
     required this.graph,
     this.chunked = false,
     this.pending = const [],
@@ -56,7 +48,6 @@ class StudySummary {
   Map<String, dynamic> toJson() => {
         'format': 'classnote.detail.v2',
         'detail': detailMarkdown,
-        'mindMap': mindMap.toJson(),
         'graph': graph.toJson(),
         'chunked': chunked,
         if (pending.isNotEmpty)
@@ -68,28 +59,19 @@ class StudySummary {
   factory StudySummary.fromJson(Map<String, dynamic> json) {
     final detail = json['detail'] as String? ?? '';
 
-    // mindMap：新格式在 mindMap 字段；老格式整个 json 就是 mindMap
-    final mapJson = json['mindMap'];
-    final mindMap = mapJson is Map<String, dynamic>
-        ? MindMapData.fromJson(mapJson)
-        : MindMapData.fromJson(json);
-
-    // graph：新格式才有；没有就用 mindMap 降级生成
+    // graph：导图单独生成；老数据没有就留空，不影响正文解析
     final graphJson = json['graph'];
-    // 导图字段结构不对时不能让整份总结解析失败：
-    // 正文/待确认都比导图重要，导图退化成空结构即可
     MindGraph graph;
     try {
       graph = graphJson is Map<String, dynamic>
           ? MindGraph.fromJson(graphJson)
-          : MindGraph.fromLegacyMindMap(mindMap);
+          : const MindGraph(root: '', branches: []);
     } catch (_) {
-      graph = MindGraph.fromLegacyMindMap(mindMap);
+      graph = const MindGraph(root: '', branches: []);
     }
 
     return StudySummary(
       detailMarkdown: detail,
-      mindMap: mindMap,
       graph: graph,
       chunked: json['chunked'] as bool? ?? false,
       pending: (json['pending'] as List?)
@@ -108,8 +90,8 @@ class StudySummary {
   String encode() => jsonEncode(toJson());
 
   /// 解析存储的 summaryJson。
-  /// 兼容三种历史形态：① 新格式带 detail/graph；② 只有 mindMap 的老格式；
-  /// ③ 完全解析不了时返回 null，调用方降级为「无总结」而不是崩溃。
+  /// 兼容历史形态：新格式带 detail/graph；老格式可能只有 mindMap（忽略）；
+  /// 完全解析不了时返回 null，调用方降级为「无总结」而不是崩溃。
   static StudySummary? tryDecode(String? raw) {
     if (raw == null || raw.isEmpty) return null;
     try {

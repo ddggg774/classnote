@@ -15,7 +15,6 @@ import 'package:classnote/agent/correction_agent.dart';
 import 'package:classnote/agent/agent_loop.dart';
 import 'package:classnote/agent/agent_tool.dart';
 import 'package:classnote/models/mind_graph.dart';
-import 'package:classnote/models/note.dart' show MindMapData;
 import 'package:classnote/models/note_template.dart';
 import 'package:classnote/models/study_note.dart';
 import 'package:classnote/models/summary_level.dart';
@@ -96,7 +95,6 @@ class _FakeLlm {
 StudySummary _fakeSummary(String md) {
   return StudySummary(
     detailMarkdown: md,
-    mindMap: MindMapData(root: '木兰科', nodes: const []),
     graph: MindGraph.fromJson({
       'root': '木兰科',
       'branches': [

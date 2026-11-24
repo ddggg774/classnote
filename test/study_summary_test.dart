@@ -6,7 +6,6 @@
 //   ③ 坏数据降级为 null 而不是抛异常。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:classnote/models/mind_graph.dart';
-import 'package:classnote/models/note.dart' show MindMapData;
 import 'package:classnote/models/study_note.dart';
 import 'package:classnote/models/terminology.dart';
 import 'package:classnote/services/ai_service.dart';
@@ -33,9 +32,6 @@ void main() {
       expect(s.detailMarkdown, contains('## 极限的定义'));
       // json 块不应残留在正文里
       expect(s.detailMarkdown, isNot(contains('"nodes"')));
-      expect(s.mindMap.root, '高等数学');
-      expect(s.mindMap.nodes.length, 1);
-      expect(s.mindMap.nodes.first.children.length, 2);
     });
 
     test('外层包了 ```markdown 围栏也能剥掉', () {
@@ -52,15 +48,14 @@ void main() {
       final s = service.debugParseSummary(raw);
       expect(s.detailMarkdown, startsWith('# 课程信息'));
       expect(s.detailMarkdown, isNot(contains('```markdown')));
-      expect(s.mindMap.root, '导数');
+      expect(s.graph.branches, isEmpty);
     });
 
     test('只有 Markdown、没有 json 时导图给空壳而不是报错', () {
       const raw = '# 课程信息\n- 课程名：线性代数';
       final s = service.debugParseSummary(raw);
       expect(s.detailMarkdown, contains('线性代数'));
-      expect(s.mindMap.nodes, isEmpty);
-      expect(s.mindMap.root, isNotEmpty);
+      expect(s.graph.branches, isEmpty);
     });
 
     test('json 内容坏了不影响正文', () {
@@ -74,7 +69,6 @@ void main() {
 ''';
       final s = service.debugParseSummary(raw);
       expect(s.detailMarkdown, contains('正文照常'));
-      expect(s.mindMap.nodes, isEmpty);
     });
 
     test('整篇只有 JSON 没有正文时抛异常，避免清空已有笔记', () {
@@ -100,7 +94,6 @@ void main() {
       final s = service.debugParseSummary(raw);
       final restored = StudySummary.tryDecode(s.encode())!;
       expect(restored.detailMarkdown, s.detailMarkdown);
-      expect(restored.mindMap.root, '主题');
       expect(restored.hasDetail, isTrue);
     });
 
@@ -108,8 +101,6 @@ void main() {
       const legacy =
           '{"root":"老笔记","nodes":[{"topic":"要点","children":["子点"]}]}';
       final restored = StudySummary.tryDecode(legacy)!;
-      expect(restored.mindMap.root, '老笔记');
-      expect(restored.mindMap.nodes.length, 1);
       // 老数据没有详细正文，页面应提示重新生成
       expect(restored.hasDetail, isFalse);
     });
@@ -143,7 +134,6 @@ void _pendingPersistenceTests() {
   group('待确认项持久化', () {
     StudySummary base({List<PendingItem> pending = const []}) => StudySummary(
           detailMarkdown: '# 标题\n正文',
-          mindMap: MindMapData(root: '木兰科', nodes: const []),
           graph: MindGraph.fromJson({
             'root': '木兰科',
             'branches': [
@@ -210,7 +200,6 @@ void _pendingPersistenceTests() {
       final withPending = base(pending: const [PendingItem(snippet: '心脾')]);
       final cleared = StudySummary(
         detailMarkdown: withPending.detailMarkdown,
-        mindMap: withPending.mindMap,
         graph: withPending.graph,
         chunked: withPending.chunked,
         pending: const [],

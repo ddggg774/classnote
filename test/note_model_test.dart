@@ -101,37 +101,4 @@ void main() {
     });
   });
 
-  group('MindMapData 解析', () {
-    test('正常 JSON 能解析出节点', () {
-      final data = MindMapData.fromJson({
-        'root': '高数',
-        'nodes': [
-          {
-            'topic': '极限',
-            'children': ['定义', '性质']
-          },
-        ],
-      });
-      expect(data.root, '高数');
-      expect(data.nodes.length, 1);
-      expect(data.nodes.first.topic, '极限');
-      expect(data.nodes.first.children.length, 2);
-    });
-
-    test('缺字段时给默认值而不是抛异常', () {
-      final data = MindMapData.fromJson({});
-      expect(data.root, '本课总结');
-      expect(data.nodes, isEmpty);
-    });
-
-    test('节点缺 children 时为空列表', () {
-      final data = MindMapData.fromJson({
-        'root': 'x',
-        'nodes': [
-          {'topic': 'y'}
-        ],
-      });
-      expect(data.nodes.first.children, isEmpty);
-    });
-  });
 }
