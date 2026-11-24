@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
@@ -21,6 +22,7 @@ import '../models/summary_level.dart';
 import '../services/academic_review_service.dart';
 import '../services/db_service.dart';
 import '../services/desensitizer.dart';
+import '../services/graph_pdf.dart';
 import '../services/share_in_service.dart';
 import '../services/local_vector.dart';
 import '../services/settings_service.dart';
@@ -39,7 +41,6 @@ import '../models/terminology.dart';
 import '../widgets/graph_canvas.dart';
 import '../widgets/location_picker.dart';
 import '../widgets/mind_graph_tree.dart';
-import '../widgets/mind_map_widget.dart';
 
 class NoteDetailPage extends StatefulWidget {
   final String noteId;
@@ -116,6 +117,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   String? _pendingSharedText;
   StreamSubscription<String>? _shareSub;
   bool _importing = false;
+  bool _generatingGraph = false;
 
   /// 批量替换前保存的待确认快照；撤销时要连清单一起还原
   List<PendingItem>? _undoPendingSnapshot;
@@ -129,10 +131,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   String? _undoTranscript;
 
   late TabController _tabController;
-  final GlobalKey _captureKey = GlobalKey();
+  final GlobalKey _graphPdfKey = GlobalKey();
   final ScrollController _detailScroll = ScrollController();
   Note? _note;
-  MindMapData? _mindMap;
   /// 3–5 级详细导图（主图+子图）
   MindGraph? _graph;
   /// 当前进入的二级分支；null 表示显示主图
@@ -159,7 +160,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   void initState() {
     super.initState();
     // 4 个 Tab：原文 / 详细笔记 / 思维导图 / 大纲
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging && mounted) {
         setState(() => _tabIndex = _tabController.index);
@@ -219,7 +220,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         AcademicReview.tryDecode(await _db.academicReviewJson(widget.noteId));
     setState(() {
       _note = note;
-      _mindMap = parsed?.mindMap;
       _graph = parsed?.graph;
       _activeBranch = null;
       _terms = TerminologyPack.tryDecode(note.terminologyJson);
@@ -626,7 +626,16 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         language: _note!.language,
         template: _template,
       );
-      final summaryJson = result.encode();
+      // 流程改为「先只出详细笔记」：导图必须等正文定稿后再单独生成
+      final detailOnly = StudySummary(
+        detailMarkdown: result.detailMarkdown,
+        mindMap: result.mindMap,
+        graph: const MindGraph(root: '', branches: []),
+        pending: result.pending,
+        extras: result.extras,
+        suppressedCount: result.suppressedCount,
+      );
+      final summaryJson = detailOnly.encode();
       // 只写总结相关字段：正文可能在这几分钟里被「保存原文/批量替换/导入改写」
       // 改过，整行 update 会把那些改动一起回滚。
       await _db.updateSummary(
@@ -639,8 +648,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       if (!mounted) return;
       setState(() {
         _note = updated;
-        _mindMap = result.mindMap;
-        _graph = result.graph;
+        _graph = const MindGraph(root: '', branches: []);
         _activeBranch = null;
         _detailMarkdown = result.detailMarkdown;
         _tabIndex = 1; // 跳到「详细笔记」，这是用户真正想看的东西
@@ -811,7 +819,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
             Tab(text: '原文'),
             Tab(text: '详细笔记'),
             Tab(text: '思维导图'),
-            Tab(text: '大纲'),
           ],
         ),
       ),
@@ -855,12 +862,11 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                       _buildTranscriptTab(),
                       _buildDetailTab(),
                       _buildMindMapTab(),
-                      _buildSummaryTab(),
                     ],
                   ),
                 ),
-                // PNG 导出需要 MindMapWidget 真实渲染，挂在这里的 Offstage 里
-                _buildPngCaptureSource(),
+                // PDF 导出需要导图真实渲染，挂在这里的 Offstage 里
+                _buildGraphPdfCaptureSource(),
               ],
             ),
     );
@@ -1844,6 +1850,74 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     return out;
   }
 
+  /// 一键优化：把质检里的术语替换与硬伤建议一次性写进详细笔记。
+  /// 只改详细笔记，原文转写不动；导图清空，避免和新正文对不上。
+  Future<void> _applyAllReviewFixes(AcademicReview review) async {
+    final detail = _detailMarkdown;
+    if (detail.trim().isEmpty) {
+      _showSnack('还没有详细笔记，无法应用建议');
+      return;
+    }
+    var next = detail;
+    var changed = 0;
+    for (final c in review.termCorrections) {
+      if (c.wrong.trim().isEmpty || c.correct.trim().isEmpty) continue;
+      if (next.contains(c.wrong)) {
+        next = next.replaceAll(c.wrong, c.correct);
+        changed++;
+      }
+    }
+    for (final e in review.hardErrors) {
+      final original = e.originalText.trim();
+      final suggestion = e.suggestion.trim();
+      if (original.isEmpty || suggestion.isEmpty) continue;
+      if (next.contains(original)) {
+        next = next.replaceAll(original, suggestion);
+        changed++;
+      }
+    }
+    if (changed == 0) {
+      _showSnack('这些建议在详细笔记里没有找到对应原文，未做修改');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('一键优化'),
+        content: Text('将修改详细笔记 $changed 处（原文转写不动），'
+            '并清空思维导图，需要重新生成。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('应用')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final parsed = StudySummary.tryDecode(_note?.summaryJson);
+    final summary = StudySummary(
+      detailMarkdown: next,
+      mindMap: MindMapData(root: '', nodes: []),
+      graph: const MindGraph(root: '', branches: []),
+      pending: parsed?.pending ?? const [],
+      extras: parsed?.extras ?? const {},
+      suppressedCount: parsed?.suppressedCount ?? 0,
+    );
+    await _db.updateSummary(_note!.id, summaryJson: summary.encode());
+    final updated = await _db.queryById(_note!.id) ?? _note!;
+    if (!mounted) return;
+    setState(() {
+      _note = updated;
+      _detailMarkdown = next;
+      _graph = const MindGraph(root: '', branches: []);
+      _activeBranch = null;
+    });
+    _showSnack('已应用 $changed 处建议；需要时重新生成思维导图');
+  }
+
   void _showAcademicReviewSheet(AcademicReview review) {
     showModalBottomSheet<void>(
       context: context,
@@ -1857,6 +1931,18 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           controller: scrollController,
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
           children: [
+            if (review.issueCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () => _applyAllReviewFixes(review),
+                    icon: const Icon(Icons.auto_fix_high, size: 18),
+                    label: const Text('一键优化（应用全部建议）'),
+                  ),
+                ),
+              ),
             Row(
               children: [
                 Expanded(
@@ -2244,7 +2330,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text('保存后会作为新版本并存，原笔记不会被覆盖。',
+                Text('会替换「详细笔记」正文（原文转写不动），并清空旧思维导图，需要重新生成。',
                     style: TextStyle(
                         fontSize: 11, color: Colors.grey.shade600)),
               ],
@@ -2258,19 +2344,34 @@ class _NoteDetailPageState extends State<NoteDetailPage>
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('保存为新版本'),
+            child: const Text('替换详细笔记'),
           ),
         ],
       ),
     );
     _importing = false;
     if (ok != true || !mounted) return;
-    await _db.addNoteRewrite(widget.noteId, content, source: '外部分享');
+    // 一键替换：只换详细笔记，原文不动；旧导图清空，等用户重新生成。
+    // 不保留旧版本（按需求），所以不再写 note_rewrites。
+    final parsed = StudySummary.tryDecode(_note?.summaryJson);
+    final summary = StudySummary(
+      detailMarkdown: content,
+      mindMap: MindMapData(root: '', nodes: []),
+      graph: const MindGraph(root: '', branches: []),
+      pending: parsed?.pending ?? const [],
+      extras: parsed?.extras ?? const {},
+      suppressedCount: parsed?.suppressedCount ?? 0,
+    );
+    await _db.updateSummary(_note!.id, summaryJson: summary.encode());
+    final updated = await _db.queryById(_note!.id) ?? _note!;
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: const Text('已保存为新版本'),
-      action: SnackBarAction(label: '查看', onPressed: _showRewrites),
-    ));
+    setState(() {
+      _note = updated;
+      _detailMarkdown = content;
+      _graph = const MindGraph(root: '', branches: []);
+      _activeBranch = null;
+    });
+    _showSnack('已替换详细笔记；需要时到「思维导图」重新生成');
   }
 
   /// 查看/复制历史改写版本
@@ -2953,41 +3054,6 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     );
   }
 
-  /// Tab 2：文字版总结（要点列表）
-  Widget _buildSummaryTab() {
-    if (_mindMap == null) return _buildEmptyHint('还没有总结，点右下角「一键总结」生成');
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text(_mindMap!.root,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 12),
-        ..._mindMap!.nodes.asMap().entries.map((entry) {
-          final idx = entry.key + 1;
-          final node = entry.value;
-          return Card(
-            margin: const EdgeInsets.only(bottom: 10),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('$idx. ${node.topic}',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  ...node.children.map((c) => Padding(
-                        padding: const EdgeInsets.only(left: 12, top: 2),
-                        child: Text('• $c', style: const TextStyle(fontSize: 14, height: 1.5)),
-                      )),
-                ],
-              ),
-            ),
-          );
-        }),
-      ],
-    );
-  }
-
   /// Tab 2：详细笔记（九段式 Markdown，可复制/导出）
   /// 额外技能产出（考点清单 / 复习题）的展示区块。
   /// 折叠起来：它们不是每次都要看，但想复习时能立刻展开。
@@ -3123,9 +3189,82 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   /// 交互：默认显示「主图」——课程主题 + 11 个一级分支；
   /// 点某个分支进入「子图」——该分支下 3–5 级的完整层级（可折叠）。
   /// 这样主图永远不拥挤，详细内容都在子图里。
+  /// 正文定稿后再生成导图：只从详细笔记推导，不再混用旧原文
+  Future<void> _generateMindMap() async {
+    if (_generatingGraph || _note == null) return;
+    final detail = _detailMarkdown.trim();
+    if (detail.isEmpty) {
+      _showSnack('还没有详细笔记，先生成详细笔记');
+      return;
+    }
+    setState(() => _generatingGraph = true);
+    try {
+      final graph = await _ai.generateMindGraph(
+        detail,
+        courseName: _note!.effectiveCourse,
+        language: _note!.language,
+      );
+      final parsed = StudySummary.tryDecode(_note!.summaryJson);
+      final summary = StudySummary(
+        detailMarkdown: detail,
+        mindMap: parsed?.mindMap ?? MindMapData(root: '', nodes: []),
+        graph: graph,
+        pending: parsed?.pending ?? const [],
+        extras: parsed?.extras ?? const {},
+        suppressedCount: parsed?.suppressedCount ?? 0,
+      );
+      await _db.updateSummary(_note!.id, summaryJson: summary.encode());
+      final updated = await _db.queryById(_note!.id) ?? _note!;
+      if (!mounted) return;
+      setState(() {
+        _note = updated;
+        _graph = graph;
+        _activeBranch = null;
+      });
+      _showSnack('思维导图已生成');
+    } catch (e) {
+      _showSnack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _generatingGraph = false);
+    }
+  }
+
   Widget _buildMindMapTab() {
     if (_graph == null || _graph!.branches.isEmpty) {
-      return _buildEmptyHint('还没有思维导图，点右下角「一键总结」生成');
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.account_tree_outlined,
+                  size: 64, color: Colors.grey.shade400),
+              const SizedBox(height: 16),
+              Text(
+                _detailMarkdown.trim().isEmpty
+                    ? '先生成详细笔记，再生成思维导图'
+                    : '详细笔记已定稿？现在生成思维导图',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: (_generatingGraph || _detailMarkdown.trim().isEmpty)
+                    ? null
+                    : _generateMindMap,
+                icon: _generatingGraph
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.auto_awesome),
+                label: Text(_generatingGraph ? '生成中…' : '生成思维导图'),
+              ),
+            ],
+          ),
+        ),
+      );
     }
     final graph = _graph!;
     final branch = _activeBranch;
@@ -3233,9 +3372,9 @@ class _NoteDetailPageState extends State<NoteDetailPage>
               const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _exporting ? null : _exportMindMapPng,
+                  onPressed: _exporting ? null : _exportMindMapPdf,
                   icon: const Icon(Icons.image_outlined, size: 18),
-                  label: const Text('导出图片'),
+                  label: const Text('导出 PDF'),
                 ),
               ),
             ],
@@ -3335,24 +3474,29 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     }
   }
 
-  /// 导出 PNG（用旧的 MindMapWidget 截长图，保留给需要图片的场景）
-  Future<void> _exportMindMapPng() async {
-    if (_mindMap == null || _exporting) return;
+  /// 导出 PDF：把导图画布渲染成位图再封进单页 PDF，
+  /// 微信/QQ 可直接转发，手机也能直接打开。
+  Future<void> _exportMindMapPdf() async {
+    if (_graph == null || _graph!.branches.isEmpty || _exporting) return;
     final box = context.findRenderObject() as RenderBox?;
     final origin =
         box == null ? null : box.localToGlobal(Offset.zero) & box.size;
     setState(() => _exporting = true);
     try {
-      final bytes = await MindMapWidget.exportPng(_captureKey);
+      final boundary = _graphPdfKey.currentContext?.findRenderObject()
+          as RenderRepaintBoundary?;
+      if (boundary == null) throw Exception('导图还没渲染完成，请稍后再试');
+      final image = await boundary.toImage(pixelRatio: 2);
+      final bytes = await buildPdfFromImage(image);
       final dir = await getTemporaryDirectory();
       final safeTitle =
-          _note!.title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
-      final file = File('${dir.path}/导图_$safeTitle.png');
-      await file.writeAsBytes(bytes);
+          (_note?.title ?? '笔记').replaceAll(RegExp(r'[^\w\u4e00-\u9fa5]'), '_');
+      final file = File('${dir.path}/导图_$safeTitle.pdf');
+      await file.writeAsBytes(bytes, flush: true);
       await SharePlus.instance.share(
         ShareParams(
-          files: [XFile(file.path)],
-          text: '「${_note!.title}」思维导图',
+          files: [XFile(file.path, mimeType: 'application/pdf')],
+          subject: '「${_note?.title ?? '课堂笔记'}」思维导图',
           sharePositionOrigin: origin,
         ),
       );
@@ -3363,15 +3507,20 @@ class _NoteDetailPageState extends State<NoteDetailPage>
     }
   }
 
-  /// 隐藏的截图源：PNG 导出需要 MindMapWidget 真实渲染在树上，
-  /// 放在 Offstage 里既不影响布局又保证 RepaintBoundary 可截图。
-  Widget _buildPngCaptureSource() {
-    if (_mindMap == null) return const SizedBox.shrink();
+  /// 离屏渲染一份导图，供 PDF 截图使用（宽度足够大，避免节点挤压）
+  Widget _buildGraphPdfCaptureSource() {
+    if (_graph == null || _graph!.branches.isEmpty) {
+      return const SizedBox.shrink();
+    }
     return Offstage(
       offstage: true,
       child: SizedBox(
-        width: 420,
-        child: MindMapWidget(data: _mindMap!, captureKey: _captureKey),
+        width: 1200,
+        height: 1600,
+        child: RepaintBoundary(
+          key: _graphPdfKey,
+          child: GraphCanvas(graph: _graph!, onNodeTap: (_) {}),
+        ),
       ),
     );
   }

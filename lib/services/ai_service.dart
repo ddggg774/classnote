@@ -594,6 +594,73 @@ $textbook
     return _parseSummary(merged, chunked: true);
   }
 
+  /// 只根据「详细笔记」生成思维导图（流程的后半段）。
+  ///
+  /// 与总结分开：详细笔记先定稿，用户再用外部 App 改写、替换，
+  /// 最后才生成导图，避免导图基于被替换前的旧正文。
+  Future<MindGraph> generateMindGraph(
+    String detail, {
+    String courseName = '',
+    String language = 'zh',
+  }) async {
+    final text = detail.trim();
+    if (text.length < 30) {
+      throw AiException('详细笔记太短，先补全再生成思维导图', retryable: false);
+    }
+    final apiKey = apiKeyOverride ?? await _settings.getApiKey();
+    if (apiKey.isEmpty) {
+      throw AiException('请先在「设置」里填写 DeepSeek API Key',
+          needSettings: true, retryable: false);
+    }
+    final textbook = _textbookBlock(courseName);
+    final system = """
+你是课堂笔记整理助手。请把用户给出的详细笔记整理成思维导图，只输出一个 JSON 对象，不要 Markdown 围栏、不要解释。
+
+结构：
+{"root":"课程主题","branches":[{"id":"b0","title":"知识点结构","children":[{"id":"b0-1","title":"节点名","details":["一句话说明"],"children":[]}]}]}
+
+规则：
+- 一级分支按内容取舍，不要为了凑数编造；没有内容的类别可以省略。
+- 节点标题具体，3–5 层；details 写定义、条件或易错点，没有就省略。
+- 绝对不能添加笔记里没有的内容。
+$textbook
+""";
+    final raw = await _chat(apiKey, system, text);
+    final jsonText = _extractJsonObject(raw);
+    Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(jsonText) as Map<String, dynamic>;
+    } catch (_) {
+      throw AiException('思维导图返回的不是合法 JSON，请重试');
+    }
+    final graph = MindGraph.fromJson(decoded);
+    if (graph.branches.isEmpty) {
+      throw AiException('思维导图没有生成节点，请重试');
+    }
+    return graph;
+  }
+
+  /// 从模型回复里抠出第一个完整的 JSON 对象（容忍前后废话与围栏）
+  static String _extractJsonObject(String raw) {
+    var text = raw.trim();
+    if (text.startsWith('```')) {
+      final firstNl = text.indexOf('\n');
+      if (firstNl >= 0) text = text.substring(firstNl + 1);
+    }
+    final start = text.indexOf('{');
+    if (start < 0) return text;
+    var depth = 0;
+    for (var i = start; i < text.length; i++) {
+      final c = text[i];
+      if (c == '{') depth++;
+      if (c == '}') {
+        depth--;
+        if (depth == 0) return text.substring(start, i + 1);
+      }
+    }
+    return text.substring(start);
+  }
+
   // ───────────────────────── 内部实现 ─────────────────────────
 
   /// 从模型输出里拆出「Markdown 正文」和「JSON 代码块」。
