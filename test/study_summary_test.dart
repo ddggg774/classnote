@@ -1,8 +1,8 @@
 // test/study_summary_test.dart
 // 详细笔记的解析与兼容性测试。
 // 重点保证三件事：
-//   ① 模型输出「Markdown 正文 + 末尾 json 代码块」时能正确拆开；
-//   ② 老数据（只有 mindMap、没有 detail）升级后不会崩、不会丢导图；
+//   ① 模型输出「Markdown 正文 + 末尾 json 代码块」时能正确拆开（历史行为）；
+//   ② 老数据（只有 mindMap、没有 detail）解析不崩，正文为空；
 //   ③ 坏数据降级为 null 而不是抛异常。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:classnote/models/mind_graph.dart';
@@ -97,7 +97,7 @@ void main() {
       expect(restored.hasDetail, isTrue);
     });
 
-    test('老数据（只有 mindMap 结构）仍能读出导图', () {
+    test('老数据（只有 mindMap 结构）解析不崩、正文为空', () {
       const legacy =
           '{"root":"老笔记","nodes":[{"topic":"要点","children":["子点"]}]}';
       final restored = StudySummary.tryDecode(legacy)!;

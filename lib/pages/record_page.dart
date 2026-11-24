@@ -567,26 +567,21 @@ class _RecordPageState extends State<RecordPage> with WidgetsBindingObserver {
     if (!mounted) return;
     // 处理完直接退出记录页，回列表；用户点进去就能看新笔记
     Navigator.of(context).pop();
-    _showSnack('已生成笔记：${result.summary?.length ?? 0} 字总结'
-        '${result.graph != null ? '、${result.graph!.totalNodes} 节点导图' : ''}');
+    _showSnack('已生成笔记：${result.summary?.length ?? 0} 字详细笔记');
   }
 
   /// 把 Agent 结果拼成 App 现有格式的 summaryJson。
   /// 复用 StudySummary 的编码格式，保证详情页的解析逻辑不用改。
   ///
-  /// 注意：legacy 的 MindMapData 由 graph 反推（详情页的「大纲」Tab 和
-  /// PNG 导出还在用它），不能随手塞空对象，否则那些功能会显示空白。
+  /// 只落详细笔记：按流程导图要在正文定稿后单独生成，
+  /// Agent 顺带产出的导图不写库，避免和之后替换的正文不一致。
   String? _buildSummaryJson(ClassroomResult result) {
     final md = (result.summary ?? '').trim();
-    final graph = result.graph;
-    final hasGraph = graph != null && graph.branches.isNotEmpty;
-
-    if (md.isEmpty && !hasGraph) return null;
+    if (md.isEmpty) return null;
 
     return StudySummary(
       detailMarkdown: md,
-      // 导图单独生成；没有就留空
-      graph: hasGraph ? graph : const MindGraph(root: '', branches: []),
+      graph: const MindGraph(root: '', branches: []),
       // 待确认项必须落库：否则用户退出详情页再进来就看不到，
       // 「点击定位」也失去了对象。
       pending: _buildPendingItems(result),

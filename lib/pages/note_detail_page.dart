@@ -1,6 +1,6 @@
 // lib/pages/note_detail_page.dart
 // 笔记详情页：四个 Tab —— 原文（可编辑）、详细笔记（九段式 Markdown）、
-// 思维导图、大纲（结构化的要点列表）。
+// 思维导图（大纲模块已删除）。
 // "生成总结"按钮调用 AI 服务，一次产出「详细笔记 + 思维导图结构」，存回数据库后分别渲染。
 import 'dart:async';
 import 'dart:io';
@@ -132,6 +132,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
 
   late TabController _tabController;
   final GlobalKey _graphPdfKey = GlobalKey();
+  final GlobalKey _graphLiveKey = GlobalKey();
   final ScrollController _detailScroll = ScrollController();
   Note? _note;
   /// 3–5 级详细导图（主图+子图）
@@ -159,7 +160,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
   @override
   void initState() {
     super.initState();
-    // 4 个 Tab：原文 / 详细笔记 / 思维导图 / 大纲
+    // 3 个 Tab：原文 / 详细笔记 / 思维导图
     _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging && mounted) {
@@ -214,7 +215,7 @@ class _NoteDetailPageState extends State<NoteDetailPage>
       }
     } catch (_) {}
     // StudySummary.tryDecode 兼容三种历史形态：
-    // ① 新格式（带 detail）；② 旧格式（只有 mindMap）；③ 坏数据（返回 null）
+    // ① 新格式（带 detail）；② 老数据（可能带 mindMap，忽略）；③ 坏数据（返回 null）
     final parsed = StudySummary.tryDecode(note.summaryJson);
     final savedReview =
         AcademicReview.tryDecode(await _db.academicReviewJson(widget.noteId));
@@ -3340,9 +3341,12 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         Expanded(
           child: branch == null
               ? (_useCanvas
-                  ? GraphCanvas(
-                      graph: graph,
-                      onNodeTap: (node) => _showCanvasNodeInfo(node),
+                  ? RepaintBoundary(
+                      key: _graphLiveKey,
+                      child: GraphCanvas(
+                        graph: graph,
+                        onNodeTap: (node) => _showCanvasNodeInfo(node),
+                      ),
                     )
                   : MindGraphOverview(
                       graph: graph,
@@ -3481,10 +3485,17 @@ class _NoteDetailPageState extends State<NoteDetailPage>
         box == null ? null : box.localToGlobal(Offset.zero) & box.size;
     setState(() => _exporting = true);
     try {
-      final boundary = _graphPdfKey.currentContext?.findRenderObject()
+      // 导出按钮只出现在导图页，优先截当前正在显示的画布；
+      // 子图视图下主画布不在树上，退回离屏渲染的那份。
+      final live = _graphLiveKey.currentContext?.findRenderObject()
           as RenderRepaintBoundary?;
+      final boundary = live ??
+          _graphPdfKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
       if (boundary == null) throw Exception('导图还没渲染完成，请稍后再试');
-      final image = await boundary.toImage(pixelRatio: 2);
+      // 刚 setState 完还没绘制时 toImage 会断言失败，等这一帧画完
+      await WidgetsBinding.instance.endOfFrame;
+      final image = await boundary.toImage(pixelRatio: 1.5);
       final bytes = await buildPdfFromImage(image);
       final dir = await getTemporaryDirectory();
       final safeTitle =

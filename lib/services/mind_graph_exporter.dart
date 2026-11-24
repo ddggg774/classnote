@@ -99,7 +99,7 @@ class MindGraphExporter {
 <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.15"></script>
 <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.15"></script>
 <script>
-  const md = ${jsonEncode(body)};
+  const md = ${jsonEncode(body).replaceAll('<', '\\u003C')};
   const {Transformer} = window.markmap;
   const transformer = new Transformer();
   const {root} = transformer.transform(md);

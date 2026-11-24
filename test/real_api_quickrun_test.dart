@@ -9,7 +9,6 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:classnote/agent/classroom_agent.dart';
 import 'package:classnote/models/mind_graph.dart';
-import 'package:classnote/models/note.dart';
 import 'package:classnote/models/study_note.dart';
 import 'package:classnote/models/summary_level.dart';
 import 'package:classnote/models/terminology.dart';
@@ -26,27 +25,11 @@ const _transcript = '''
 /// 复刻 record_page 里的落库逻辑，确保测的就是真实那份
 String? buildSummaryJson(ClassroomResult result) {
   final md = (result.summary ?? '').trim();
-  final graph = result.graph;
-  final hasGraph = graph != null && graph.branches.isNotEmpty;
-  if (md.isEmpty && !hasGraph) return null;
-
-  final nodes = <MindNode>[];
-  if (hasGraph) {
-    for (final branch in graph.branches) {
-      final children = <String>[];
-      for (final child in branch.children) {
-        children.add(child.title);
-        for (final grand in child.children) {
-          children.add(grand.title);
-        }
-      }
-      nodes.add(MindNode(topic: branch.title, children: children));
-    }
-  }
+  if (md.isEmpty) return null;
 
   return StudySummary(
     detailMarkdown: md,
-    graph: hasGraph ? graph : const MindGraph(root: '', branches: []),
+    graph: const MindGraph(root: '', branches: []),
   ).encode();
 }
 
@@ -89,13 +72,10 @@ void main() {
       expect(decoded, isNotNull, reason: '存进去的 JSON 必须能被详情页解码');
       expect(decoded!.detailMarkdown.trim(), isNotEmpty);
       // ignore: avoid_print
-      print('=== 解码后：正文 ${decoded.detailMarkdown.length} 字，'
-          '导图 ${decoded.graph.branches.length} 分支 '
-          '${decoded.graph.totalNodes} 节点 最深 ${decoded.graph.maxDepth} 级');
+      print('=== 解码后：正文 ${decoded.detailMarkdown.length} 字');
 
-      // ③ 导图结构可用
-      expect(decoded.graph.branches, isNotEmpty);
-      expect(decoded.graph.maxDepth, greaterThanOrEqualTo(2));
+      // ③ 按新流程只落详细笔记，导图由详情页单独生成
+      expect(decoded.graph.branches, isEmpty);
 
     }, timeout: const Timeout(Duration(minutes: 5)));
 

@@ -335,12 +335,6 @@ $textbook
 ''';
   }
 
-  /// 导图规范。模板声明了 mindmapBranches 就用它，否则沿用 11 个固定分支。
-  ///
-  /// 为什么默认沿用固定 11 个：MindGraph.requiredBranches、
-  /// 导出器与既有测试全都依赖这 11 个分支名，
-  /// 让模板静默换掉它们会把渲染和导出一起弄坏。
-
   /// 分块整理用的提示词（长课堂才有），带上教材信息
   static String buildChunkPrompt({
     String courseName = '',
@@ -605,7 +599,7 @@ $textbook
   // ───────────────────────── 内部实现 ─────────────────────────
 
   /// 从模型输出里拆出「Markdown 正文」和「JSON 代码块」。
-  /// JSON 里是一棵 3–5 级详细导图；同时从它推导出旧的两层 mindMap 以保持兼容。
+  /// 解析详细笔记（导图由 generateMindGraph 单独生成，不再从正文里拆 JSON）。
   /// 解析不出 JSON 时退化为：只用 Markdown，导图用空壳（页面会提示重新生成）。
   StudySummary _parseSummary(String raw, {required bool chunked}) {
     var content = raw.trim();

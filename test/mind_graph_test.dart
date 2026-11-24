@@ -238,4 +238,21 @@ void main() {
       expect(MindGraphExporter.extOf('unknown'), 'txt');
     });
   });
+
+  test('导图标题里的 </script> 不会打断 Markmap HTML', () {
+    const g = MindGraph(
+      root: '课程',
+      branches: [
+        MindGraphNode(
+          id: 'b0',
+          title: '</script><b>注入</b>',
+          details: [],
+          children: [],
+        ),
+      ],
+    );
+    final html = MindGraphExporter.toMarkmapHtml(g);
+    expect(html.contains('</script><b>注入</b>'), isFalse);
+    expect(html.contains('\\u003C/script>'), isTrue);
+  });
 }

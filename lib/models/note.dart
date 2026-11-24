@@ -217,19 +217,3 @@ class Note {
 /// AI 总结的结构化数据：一个中心主题 + 多个要点，每个要点带子点。
 /// 对应思维导图：中心 -> 分支 -> 子分支。
 
-class MindNode {
-  final String topic;              // 要点标题
-  final List<String> children;     // 子点
-
-  MindNode({required this.topic, required this.children});
-
-  factory MindNode.fromJson(Map<String, dynamic> json) {
-    final rawChildren = (json['children'] as List?) ?? [];
-    return MindNode(
-      topic: (json['topic'] as String?) ?? '',
-      children: rawChildren.map((e) => e.toString()).toList(),
-    );
-  }
-
-  Map<String, dynamic> toJson() => {'topic': topic, 'children': children};
-}
