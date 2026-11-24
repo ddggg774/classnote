@@ -8,6 +8,7 @@ import 'package:classnote/models/study_note.dart';
 import 'package:classnote/models/summary_level.dart';
 import 'package:classnote/services/ai_service.dart';
 import 'package:classnote/services/db_service.dart';
+import 'package:classnote/services/template_service.dart';
 
 void main() {
   group('长课堂合并沿用档位/模板', () {
@@ -69,5 +70,17 @@ void main() {
       expect(after.templateId, 'tpl-x');
       expect(after.summaryJson, contains('新总结'));
     });
+  });
+
+  test('总结提示词不再要求模型输出导图 JSON（导图改为单独生成）', () {
+    for (final level in SummaryLevel.values) {
+      final p = AiService.buildPromptForLevel(level);
+      expect(p.contains('```json'), isFalse, reason: level.name);
+    }
+    final tpl = AiService.buildPrompt(
+      TemplateService.defaultTemplate,
+      SummaryLevel.normal,
+    );
+    expect(tpl.contains('```json'), isFalse);
   });
 }

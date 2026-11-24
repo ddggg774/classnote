@@ -139,42 +139,6 @@ class AiService {
 
 ''';
 
-  /// 思维导图 JSON 的输出规范。与章节解耦：模板只决定正文结构，
-  /// 导图默认仍用 11 个固定一级分支（MindGraph.requiredBranches）。
-  static const String _promptMindmapSpec = '''
-## 额外要求
-在 Markdown 正文的**最末尾**，附一个 JSON 代码块，内容是一棵**详细思维导图**（同样不许编造）。
-这份导图会被渲染成树形浏览 + 导出到 XMind，所以结构必须规范：
-
-```json
-{"root":"课程主题","branches":[
- {"id":"b0","title":"课程信息","mark":"none","children":[
-   {"id":"b0-1","title":"具体节点名","relation":"包含","details":["说明1","说明2"],"source":"12:30「原文片段」","mark":"key","children":[]}
- ]}
-]}
-```
-
-导图硬性要求：
-1. **一级分支固定这 11 个，顺序不变**：课程信息、学习目标、知识点结构、公式/定理、
-   例题与解题步骤、易错点、老师强调、考试/作业提示、课堂问答、术语表、待确认清单。
-   某个分支原文里没有内容，就把该分支写成 `{"title":"该分支名","children":[{"id":"x","title":"未提及"}]}`，
-   **不要省略这个分支**。
-2. **层级 3~5 级**：一级分支 → 二级（知识点/例题/公式名）→ 三级（概念/适用条件/步骤）→ 四~五级（细节）。
-   节点标题必须具体（写"洛必达法则的适用条件"而不是"重点"；写"例3：求 lim(x→0) sin x/x"而不是"例题1"）。
-3. **节点内容按类型展开**（放在 details 数组里，每条一句、简短）：
-   - 概念节点：定义 + 成立条件
-   - 公式节点：公式原文 + 各变量含义 + 适用条件
-   - 例题节点：题干摘要 + 思路 + 关键步骤 + 答案 + 易错点（步骤缺失写"〔转写缺失〕"）
-   - 作业节点：要求 + 截止时间 + 提交方式（没有就写"未提及"）
-4. **relation 字段**标注与父节点的关系，从这些里选：前提、推导、因果、对比、包含、易错、考试相关。
-   说不清就省略该字段，不要乱填。
-5. **source 字段**：关键知识点、公式、例题、考试作业提示节点，尽量给时间戳或「原文片段」。
-   转写听不清的，写"待确认"并把 mark 设为 "unconfirmed"。
-6. **mark 字段**（视觉编码）只能是这几个值之一：`key`(★重点) `hard`(▲难点)
-   `pitfall`(⚠易错) `exam`(◆考点) `unconfirmed`(❓待确认) `quote`(「」老师原话) `none`。
-7. details 是 **字符串数组**，不是对象；children 是 **节点数组**，没有子节点就给 `[]` 或省略。
-''';
-
   /// 九段式完整提示词。由上面的分段拼成，行为与拆分前完全一致：
   /// 铁律与整理要求一字未改，只是从一段大字符串拆成了可复用的常量。
   static const String _detailSystemPrompt = '''
@@ -183,7 +147,6 @@ $_promptIronRules
 $_promptWritingRules
 ## 输出结构（严格按此顺序与标题）
 $_detailSections
-$_promptMindmapSpec
 ''';
 
   /// 超长课堂的「分块整理」提示词：只整理结构，不做最终排版
@@ -262,11 +225,7 @@ $textbook
 - 绝对不编造。缺失内容写"未提及"。
 - 这一档只求"能快速扫一遍回忆起讲了什么"，不要展开细节。
 - 篇幅控制在原文的 5%~10%。
-
-最后附一个 JSON 代码块供思维导图使用（没有内容的分支也要保留，内部写"未提及"）：
-```json
-{"root":"课程主题","branches":[{"id":"b0","title":"知识点结构","children":[{"id":"b0-1","title":"具体节点名","details":["一句话说明"],"children":[]}]}]}
-```
+"
 ''';
 
       case SummaryLevel.detail:
@@ -358,7 +317,6 @@ $textbook
       b.writeln();
     }
 
-    b.writeln(_mindmapSpecFor(template));
     final body = b.toString().trimRight();
     return textbook.isEmpty ? body : '$body\n$textbook';
   }
@@ -383,22 +341,6 @@ $textbook
   /// 为什么默认沿用固定 11 个：MindGraph.requiredBranches、
   /// 导出器与既有测试全都依赖这 11 个分支名，
   /// 让模板静默换掉它们会把渲染和导出一起弄坏。
-  static String _mindmapSpecFor(NoteTemplate template) {
-    if (!template.overridesMindmap) return _promptMindmapSpec.trimRight();
-    final branches = template.mindmapBranches
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    if (branches.isEmpty) return _promptMindmapSpec.trimRight();
-    return _promptMindmapSpec
-        .trimRight()
-        .replaceFirst(
-          RegExp(r'一级分支固定这 \d+ 个，顺序不变\*\*：[^。]*。',
-              multiLine: true),
-          '一级分支固定这 ${branches.length} 个，顺序不变**：'
-          '${branches.join('、')}。',
-        );
-  }
 
   /// 分块整理用的提示词（长课堂才有），带上教材信息
   static String buildChunkPrompt({

@@ -293,15 +293,15 @@ void main() {
     });
   });
 
-  group('导图分支覆盖', () {
-    test('未声明 mindmapBranches 时沿用固定 11 个分支', () {
-      final g = TemplateService.defaultTemplate;
-      expect(g.overridesMindmap, isFalse);
-      final p = AiService.buildPrompt(g, SummaryLevel.normal);
-      expect(p.contains('一级分支固定这 11 个'), isTrue);
+  group('导图与正文解耦', () {
+    test('模板提示词不再包含导图分支要求', () {
+      final p = AiService.buildPrompt(
+          TemplateService.defaultTemplate, SummaryLevel.normal);
+      expect(p.contains('一级分支固定'), isFalse);
+      expect(p.contains('```json'), isFalse);
     });
 
-    test('声明了 mindmapBranches 时替换分支列表', () {
+    test('模板声明 mindmapBranches 也不会写进正文提示词', () {
       const t = NoteTemplate(
         id: 'custom-mm',
         name: '自定义导图',
@@ -309,9 +309,8 @@ void main() {
         mindmapBranches: ['甲节', '乙节', '丙节'],
       );
       final p = AiService.buildPrompt(t, SummaryLevel.normal);
-      expect(p.contains('一级分支固定这 3 个'), isTrue);
-      expect(p.contains('甲节、乙节、丙节'), isTrue);
-      expect(p.contains('一级分支固定这 11 个'), isFalse);
+      expect(p.contains('甲节、乙节、丙节'), isFalse);
+      expect(p.contains('一级分支固定'), isFalse);
     });
   });
 
